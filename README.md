@@ -1,3 +1,5 @@
+[![Coverage Status](https://coveralls.io/repos/github/effective-security/metrics/badge.svg?branch=main)](https://coveralls.io/github/effective-security/metrics?branch=main)
+
 metrics
 =======
 
