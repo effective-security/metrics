@@ -214,7 +214,6 @@ func Test_Global(t *testing.T) {
 	require.NoError(t, err)
 
 	metrics.UpdateFilter([]string{"es"}, nil)
-	metrics.UpdateFilterAndLabels([]string{"es"}, nil, nil, nil)
 	metrics.SetGauge([]string{"test", "metrics", "gauge"}, 123)
 	metrics.IncrCounter([]string{"test", "metrics", "counter"}, 123)
 	metrics.AddSample([]string{"test", "metrics", "sample"}, 123)
