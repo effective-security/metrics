@@ -25,8 +25,6 @@ type Config struct {
 
 	AllowedPrefixes []string // A list of metric prefixes to allow, with '.' as the separator
 	BlockedPrefixes []string // A list of metric prefixes to block, with '.' as the separator
-	AllowedLabels   []string // A list of metric labels to allow, with '.' as the separator
-	BlockedLabels   []string // A list of metric labels to block, with '.' as the separator
 	FilterDefault   bool     // Whether to allow metrics by default
 }
 
@@ -34,12 +32,10 @@ type Config struct {
 // be used to emit
 type Metrics struct {
 	Config
-	lastNumGC     uint32
-	sink          Sink
-	filter        *iradix.Tree
-	allowedLabels map[string]bool
-	blockedLabels map[string]bool
-	filterLock    sync.RWMutex // Lock filters and allowedLabels/blockedLabels access
+	lastNumGC  uint32
+	sink       Sink
+	filter     *iradix.Tree
+	filterLock sync.RWMutex // Lock filters and allowedLabels/blockedLabels access
 }
 
 // Shared global metrics instance
@@ -73,7 +69,7 @@ func New(conf *Config, sink Sink) (*Metrics, error) {
 	met := &Metrics{}
 	met.Config = *conf
 	met.sink = sink
-	met.UpdateFilterAndLabels(conf.AllowedPrefixes, conf.BlockedPrefixes, conf.AllowedLabels, conf.BlockedLabels)
+	met.UpdateFilter(conf.AllowedPrefixes, conf.BlockedPrefixes)
 
 	// Start the runtime collector
 	if conf.EnableRuntimeMetrics {
@@ -117,12 +113,4 @@ func MeasureSince(key []string, start time.Time, tags ...Tag) {
 // UpdateFilter updates filters
 func UpdateFilter(allow, block []string) {
 	globalMetrics.Load().(*Metrics).UpdateFilter(allow, block)
-}
-
-// UpdateFilterAndLabels set allow/block prefixes of metrics while allowedLabels
-// and blockedLabels - when not nil - allow filtering of labels in order to
-// block/allow globally labels (especially useful when having large number of
-// values for a given label). See README.md for more information about usage.
-func UpdateFilterAndLabels(allow, block, allowedLabels, blockedLabels []string) {
-	globalMetrics.Load().(*Metrics).UpdateFilterAndLabels(allow, block, allowedLabels, blockedLabels)
 }

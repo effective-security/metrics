@@ -77,32 +77,11 @@ func (m *Metrics) MeasureSince(key []string, start time.Time, tags ...Tag) {
 
 // UpdateFilter overwrites the existing filter with the given rules.
 func (m *Metrics) UpdateFilter(allow, block []string) {
-	m.UpdateFilterAndLabels(allow, block, m.AllowedLabels, m.BlockedLabels)
-}
-
-// UpdateFilterAndLabels overwrites the existing filter with the given rules.
-func (m *Metrics) UpdateFilterAndLabels(allow, block, allowedLabels, blockedLabels []string) {
 	m.filterLock.Lock()
 	defer m.filterLock.Unlock()
 
 	m.AllowedPrefixes = allow
 	m.BlockedPrefixes = block
-
-	if allowedLabels == nil {
-		// Having a white list means we take only elements from it
-		m.allowedLabels = nil
-	} else {
-		m.allowedLabels = make(map[string]bool)
-		for _, v := range allowedLabels {
-			m.allowedLabels[v] = true
-		}
-	}
-	m.blockedLabels = make(map[string]bool)
-	for _, v := range blockedLabels {
-		m.blockedLabels[v] = true
-	}
-	m.AllowedLabels = allowedLabels
-	m.BlockedLabels = blockedLabels
 
 	m.filter = iradix.New()
 	for _, prefix := range m.AllowedPrefixes {
@@ -113,40 +92,6 @@ func (m *Metrics) UpdateFilterAndLabels(allow, block, allowedLabels, blockedLabe
 	}
 }
 
-// labelIsAllowed return true if a should be included in metric
-// the caller should lock m.filterLock while calling this method
-func (m *Metrics) labelIsAllowed(label *Tag) bool {
-	labelName := (*label).Name
-	if m.blockedLabels != nil {
-		_, ok := m.blockedLabels[labelName]
-		if ok {
-			// If present, let's remove this label
-			return false
-		}
-	}
-	if m.allowedLabels != nil {
-		_, ok := m.allowedLabels[labelName]
-		return ok
-	}
-	// Allow by default
-	return true
-}
-
-// filterLabels return only allowed tags
-// the caller should lock m.filterLock while calling this method
-func (m *Metrics) filterLabels(tags []Tag) []Tag {
-	if tags == nil {
-		return nil
-	}
-	toReturn := tags[:0]
-	for _, label := range tags {
-		if m.labelIsAllowed(&label) {
-			toReturn = append(toReturn, label)
-		}
-	}
-	return toReturn
-}
-
 // Returns whether the metric should be allowed based on configured prefix filters
 // Also return the applicable tags
 func (m *Metrics) allowMetric(key []string, tags []Tag) (bool, []Tag) {
@@ -154,15 +99,15 @@ func (m *Metrics) allowMetric(key []string, tags []Tag) (bool, []Tag) {
 	defer m.filterLock.RUnlock()
 
 	if m.filter == nil || m.filter.Len() == 0 {
-		return m.Config.FilterDefault, m.filterLabels(tags)
+		return m.Config.FilterDefault, tags
 	}
 
 	_, allowed, ok := m.filter.Root().LongestPrefix([]byte(strings.Join(key, ".")))
 	if !ok {
-		return m.Config.FilterDefault, m.filterLabels(tags)
+		return m.Config.FilterDefault, tags
 	}
 
-	return allowed.(bool), m.filterLabels(tags)
+	return allowed.(bool), tags
 }
 
 // Periodically collects runtime stats to publish

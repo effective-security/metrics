@@ -20,8 +20,13 @@ type Provider interface {
 }
 ```
 
-We also removed `EmitKey` method since it's not supported by Prometheus,
+We removed `EmitKey` method since it's not supported by Prometheus,
 which is the most popular provider.
+
+We also removed `AllowedLabels` config, as it's hard to configure in production,
+and impacts the performance.
+Developers should design better which labels are published, 
+to keep the cardinality on acceptable level.
 
 Sinks
 -----
@@ -52,23 +57,10 @@ In addition to the sinks, the `InmemSignal` can be used to catch a signal,
 and dump a formatted output of recent metrics. For example, when a process gets
 a SIGUSR1, it can dump to stderr recent performance metrics for debugging.
 
-Labels
-------
+Tags
+----
 
-Most metrics do have an equivalent ending with `WithLabels`, such methods
-allow to push metrics with labels and use some features of underlying Sinks
-(ex: translated into Prometheus labels).
-
-Since some of these labels may increase greatly cardinality of metrics, the
-library allow to filter labels using a blacklist/whitelist filtering system
-which is global to all metrics.
-
-* If `Config.AllowedLabels` is not nil, then only labels specified in this value will be sent to underlying Sink, otherwise, all labels are sent by default.
-* If `Config.BlockedLabels` is not nil, any label specified in this value will not be sent to underlying Sinks.
-
-By default, both `Config.AllowedLabels` and `Config.BlockedLabels` are nil, meaning that
-no tags are filetered at all, but it allow to a user to globally block some tags with high
-cardinality at application level.
+The metrics methods allow to push metrics with tags (or labels) and use some features of underlying Sinks (ex: translated into Prometheus labels).
 
 Examples
 --------
