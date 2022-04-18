@@ -150,7 +150,7 @@ func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
 		g = prometheus.NewSummary(prometheus.SummaryOpts{
 			Name:        key,
 			Help:        key,
-			MaxAge:      10 * time.Second,
+			MaxAge:      DefaultPrometheusOpts.Expiration,
 			ConstLabels: prometheusLabels(tags),
 		})
 		p.summaries[hash] = g
