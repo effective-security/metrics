@@ -165,7 +165,7 @@ func Test_Emit(t *testing.T) {
 		mocked.On("AddSample", mock.Anything, mock.Anything, mock.Anything).Times(2)
 
 		prov, err := metrics.New(&metrics.Config{
-			ServiceName:    "dolly",
+			ServiceName:    "effective-security",
 			EnableHostname: true,
 			FilterDefault:  true,
 		}, mocked)
@@ -189,7 +189,7 @@ func Test_FanoutSink(t *testing.T) {
 
 	prov, err := metrics.New(
 		&metrics.Config{
-			ServiceName:    "dolly",
+			ServiceName:    "effective-security",
 			EnableHostname: true,
 			FilterDefault:  true,
 		},
