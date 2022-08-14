@@ -126,7 +126,7 @@ func (b *Bridge) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Debugf("reason=stopping")
+			logger.KV(xlog.DEBUG, "reason", "stopping")
 			return
 		case <-ticker.C:
 			mfChan := make(chan *dto.MetricFamily, 1024)
@@ -155,9 +155,9 @@ func (b *Bridge) Run(ctx context.Context) {
 }
 
 // NOTE: The CloudWatch API has the following limitations:
-//  - Max 40kb request size
-//	- Single namespace per request
-//	- Max 10 dimensions per metric
+//   - Max 40kb request size
+//   - Single namespace per request
+//   - Max 10 dimensions per metric
 func (b *Bridge) publishMetricsToCloudWatch(mfs []*dto.MetricFamily) (count int, e error) {
 	vec, err := expfmt.ExtractSamples(&expfmt.DecodeOptions{Timestamp: model.Now()}, mfs...)
 	if err != nil {
@@ -375,7 +375,7 @@ func (b *Bridge) fetchMetricFamilies(ch chan<- *dto.MetricFamily) {
 
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		logger.Errorf("reason=NewRequest, err=[%v]", err.Error())
+		logger.KV(xlog.ERROR, "reason", "NewRequest", "err", err.Error())
 		return
 	}
 	req.Header.Add("Accept", acceptHeader)
@@ -390,7 +390,7 @@ func (b *Bridge) fetchMetricFamilies(ch chan<- *dto.MetricFamily) {
 		client := &http.Client{Transport: transport}
 		resp, err = client.Do(req)
 		if err != nil {
-			logger.Errorf("url=%q, err=[%v]", url, err.Error())
+			logger.KV(xlog.ERROR, "url", url, "err", err.Error())
 			return
 		}
 	} else {
@@ -403,7 +403,7 @@ func (b *Bridge) fetchMetricFamilies(ch chan<- *dto.MetricFamily) {
 
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		logger.Errorf("http_status=%v, url=%q", url, resp.StatusCode)
+		logger.KV(xlog.ERROR, "http_status", resp.StatusCode, "url", url)
 	}
 	parseResponse(resp, ch)
 }
@@ -413,7 +413,7 @@ func (b *Bridge) fetchMetricFamilies(ch chan<- *dto.MetricFamily) {
 func parseResponse(resp *http.Response, ch chan<- *dto.MetricFamily) {
 	mediaType, params, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil {
-		logger.Errorf("reason=ParseMediaType, err=[%v]", err.Error())
+		logger.KV(xlog.ERROR, "reason", "ParseMediaType", "err", err.Error())
 	}
 
 	if err == nil && mediaType == "application/vnd.google.protobuf" && params["encoding"] == "delimited" && params["proto"] == "io.prometheus.client.MetricFamily" {
@@ -423,7 +423,7 @@ func parseResponse(resp *http.Response, ch chan<- *dto.MetricFamily) {
 				if err == io.EOF {
 					break
 				}
-				logger.Errorf("reason=ReadDelimited, err=[%v]", err.Error())
+				logger.KV(xlog.ERROR, "reason", "ReadDelimited", "err", err.Error())
 				return
 			}
 			ch <- mf
@@ -432,7 +432,7 @@ func parseResponse(resp *http.Response, ch chan<- *dto.MetricFamily) {
 		var parser expfmt.TextParser
 		metricFamilies, err := parser.TextToMetricFamilies(resp.Body)
 		if err != nil {
-			logger.Errorf("reason=TextToMetricFamilies, err=[%v]", err.Error())
+			logger.KV(xlog.ERROR, "reason", "TextToMetricFamilies", "err", err.Error())
 			return
 		}
 		for _, mf := range metricFamilies {

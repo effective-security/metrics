@@ -46,7 +46,7 @@ func Test_NewMetricSinkFromURL_InMem_InvalidParams(t *testing.T) {
 	assert.EqualError(t, err, "unrecognized sink name: \"notsupported\"")
 
 	_, err = factory.NewMetricSinkFromURL("^notURL::://\x7f")
-	assert.EqualError(t, err, "parse \"^notURL::://\\u007f\": net/url: invalid control character in URL")
+	assert.EqualError(t, err, "parse \"^notURL::://\\x7f\": net/url: invalid control character in URL")
 }
 
 func Test_NewMetricSinkFromURL_Datadog(t *testing.T) {
