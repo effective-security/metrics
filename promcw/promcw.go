@@ -140,7 +140,7 @@ func (b *Bridge) Run(ctx context.Context) {
 
 			count, err := b.publishMetricsToCloudWatch(metricFamilies)
 			if err != nil {
-				logger.KV(xlog.ERROR, "reason", "publishMetricsToCloudWatch", "err", err)
+				logger.KV(xlog.ERROR, "reason", "publish", "err", err)
 				msg := err.Error()
 				// do not retry on expired or missing creds
 				if strings.Contains(msg, "expired") ||
@@ -148,7 +148,7 @@ func (b *Bridge) Run(ctx context.Context) {
 					return
 				}
 			} else {
-				logger.KV(xlog.DEBUG, "reason", "publishMetricsToCloudWatch", "count", count)
+				logger.KV(xlog.DEBUG, "status", "published", "count", count)
 			}
 		}
 	}

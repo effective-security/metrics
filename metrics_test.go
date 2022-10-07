@@ -115,9 +115,7 @@ func Test_SetProvider_BlackWholeSink(t *testing.T) {
 	run(prov, 10)
 }
 
-//
 // Mock
-//
 type mockedSink struct {
 	t *testing.T
 	mock.Mock
