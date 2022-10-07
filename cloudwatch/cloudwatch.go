@@ -113,6 +113,10 @@ func (p *Sink) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			logger.KV(xlog.DEBUG, "reason", "stopping")
+			err := p.Flush()
+			if err != nil {
+				logger.KV(xlog.ERROR, "reason", "Flush", "err", err)
+			}
 			return
 		case <-ticker.C:
 			err := p.Flush()
@@ -132,6 +136,7 @@ func (p *Sink) Run(ctx context.Context) {
 // Flush the data to CloudWatch
 func (p *Sink) Flush() error {
 	data := p.Data()
+	total := len(data)
 
 	// 20 is the max metrics per request
 	for len(data) > 20 {
@@ -149,6 +154,10 @@ func (p *Sink) Flush() error {
 			return err
 		}
 	}
+	if total > 0 {
+		logger.KV(xlog.DEBUG, "status", "published", "count", total)
+	}
+
 	return nil
 }
 
@@ -202,9 +211,13 @@ func dimensions(labels []metrics.Tag) []*cloudwatch.Dimension {
 	ds := make([]*cloudwatch.Dimension, len(labels))
 	for idx, v := range labels {
 		ds[idx] = &cloudwatch.Dimension{
-			Name:  &v.Name,
-			Value: &v.Value,
+			Name:  aws.String(v.Name),
+			Value: aws.String(v.Value),
 		}
+	}
+
+	if len(ds) > 10 {
+		logger.Panicf("AWS does not support more than 10 dimentions: %v", ds)
 	}
 	return ds
 }
@@ -248,7 +261,6 @@ func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
 			MetricName: &key,
 			Timestamp:  aws.Time(now),
 			Dimensions: dimensions(tags),
-			Value:      valPtr,
 			StatisticValues: &cloudwatch.StatisticSet{
 				Minimum:     valPtr,
 				Maximum:     valPtr,
@@ -258,7 +270,6 @@ func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
 		}
 		p.samples[hash] = g
 	} else {
-		g.Value = valPtr
 		if val64 < *g.StatisticValues.Minimum {
 			g.StatisticValues.Minimum = valPtr
 		}
