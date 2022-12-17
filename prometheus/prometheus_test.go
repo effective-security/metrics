@@ -8,6 +8,7 @@ import (
 
 	"github.com/effective-security/metrics"
 	"github.com/effective-security/metrics/prometheus"
+	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,13 +19,33 @@ func run(p metrics.Provider, times int) {
 		p.SetGauge([]string{"test", "metrics", "gauge"}, float32(i))
 		p.IncrCounter([]string{"test", "metrics", "counter"}, float32(i))
 		p.AddSample([]string{"test", "metrics", "sample"}, float32(i))
-		p.MeasureSince([]string{"test", "metrics", "since"}, time.Now().Add(time.Duration(i)*time.Second))
+		p.MeasureSince([]string{"test", "metrics", "since"}, time.Now().Add(-time.Duration(i)*time.Second))
 	}
 }
 
 func Test_SetProviderPrometheus(t *testing.T) {
+	reg := prom.NewRegistry()
 	prometheus.DefaultPrometheusOpts = prometheus.Opts{
 		Expiration: 2 * time.Second,
+		Registerer: reg,
+		CounterDefinitions: []prometheus.CounterDefinition{
+			{
+				Name: []string{"es", "test", "metrics", "counter"},
+				Help: "counter.es_test_metrics_counter provides test count",
+			},
+		},
+		GaugeDefinitions: []prometheus.GaugeDefinition{
+			{
+				Name: []string{"es", "test", "metrics", "gauge"},
+				Help: "gauge.es_test_metrics_gauge provides test gauge",
+			},
+		},
+		SummaryDefinitions: []prometheus.SummaryDefinition{
+			{
+				Name: []string{"es", "test", "metrics", "sample"},
+				Help: "sample.es_test_metrics_sample provides test sample",
+			},
+		},
 	}
 	d, err := prometheus.NewSink()
 	require.NoError(t, err)
@@ -44,10 +65,10 @@ func Test_SetProviderPrometheus(t *testing.T) {
 	require.NoError(t, err)
 
 	w := httptest.NewRecorder()
-	promhttp.Handler().ServeHTTP(w, r)
-	require.Equal(t, http.StatusOK, w.Code)
+	promhttp.HandlerFor(reg, promhttp.HandlerOpts{}).ServeHTTP(w, r)
 
 	body := w.Body.String()
+	require.Equal(t, http.StatusOK, w.Code, "Error: "+body)
 	assert.Contains(t, body, "es_test_metrics_since_count")
 	assert.Contains(t, body, `env_tag="test_value"`)
 
@@ -56,9 +77,12 @@ func Test_SetProviderPrometheus(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	promhttp.Handler().ServeHTTP(w, r)
-	require.Equal(t, http.StatusOK, w.Code)
-
 	body = w.Body.String()
+	require.Equal(t, http.StatusOK, w.Code, "Error: "+body)
 	assert.NotContains(t, body, "es_test_metrics_since_count")
 	assert.NotContains(t, body, `env_tag="test_value"`)
+
+	//check if register has a sink by unregistering it.
+	ok := reg.Unregister(d)
+	assert.True(t, ok)
 }
