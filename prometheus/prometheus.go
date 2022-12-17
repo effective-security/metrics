@@ -130,8 +130,8 @@ func (p *Sink) SetGauge(parts []string, val float32, tags []metrics.Tag) {
 	g, ok := p.gauges[hash]
 	if !ok {
 		g = prometheus.NewGauge(prometheus.GaugeOpts{
-			Name:        key,
-			Help:        key,
+			Name: key,
+			//Help:        key,
 			ConstLabels: prometheusLabels(tags),
 		})
 		p.gauges[hash] = g
@@ -148,8 +148,8 @@ func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
 	g, ok := p.summaries[hash]
 	if !ok {
 		g = prometheus.NewSummary(prometheus.SummaryOpts{
-			Name:        key,
-			Help:        key,
+			Name: key,
+			//Help:        key,
 			MaxAge:      DefaultPrometheusOpts.Expiration,
 			ConstLabels: prometheusLabels(tags),
 		})
@@ -173,8 +173,8 @@ func (p *Sink) IncrCounter(parts []string, val float32, tags []metrics.Tag) {
 	g, ok := p.counters[hash]
 	if !ok {
 		g = prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        key,
-			Help:        key,
+			Name: key,
+			//Help:        key,
 			ConstLabels: prometheusLabels(tags),
 		})
 		p.counters[hash] = g

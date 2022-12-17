@@ -2,10 +2,9 @@ package metrics
 
 import (
 	"runtime"
-	"strings"
 	"time"
 
-	iradix "github.com/hashicorp/go-immutable-radix"
+	"github.com/effective-security/porto/x/slices"
 )
 
 func (m *Metrics) prepare(typ string, key []string, tags ...Tag) (bool, []string, []Tag) {
@@ -32,8 +31,8 @@ func (m *Metrics) prepare(typ string, key []string, tags ...Tag) (bool, []string
 	if m.GlobalPrefix != "" {
 		key = insert(0, m.GlobalPrefix, key)
 	}
-	allowed, labelsFiltered := m.allowMetric(key, tags)
-	return allowed, key, labelsFiltered
+
+	return m.allowMetric(key), key, tags
 }
 
 // SetGauge should retain the last value it is set to
@@ -65,7 +64,7 @@ func (m *Metrics) AddSample(key []string, val float32, tags ...Tag) {
 
 // MeasureSince is for timing information
 func (m *Metrics) MeasureSince(key []string, start time.Time, tags ...Tag) {
-	elapsed := time.Now().Sub(start)
+	elapsed := time.Since(start)
 	msec := float32(elapsed.Nanoseconds()) / float32(m.TimerGranularity)
 
 	allowed, keys, labels := m.prepare("timer", key, tags...)
@@ -77,37 +76,25 @@ func (m *Metrics) MeasureSince(key []string, start time.Time, tags ...Tag) {
 
 // UpdateFilter overwrites the existing filter with the given rules.
 func (m *Metrics) UpdateFilter(allow, block []string) {
-	m.filterLock.Lock()
-	defer m.filterLock.Unlock()
-
 	m.AllowedPrefixes = allow
 	m.BlockedPrefixes = block
-
-	m.filter = iradix.New()
-	for _, prefix := range m.AllowedPrefixes {
-		m.filter, _, _ = m.filter.Insert([]byte(prefix), true)
-	}
-	for _, prefix := range m.BlockedPrefixes {
-		m.filter, _, _ = m.filter.Insert([]byte(prefix), false)
-	}
 }
 
 // Returns whether the metric should be allowed based on configured prefix filters
 // Also return the applicable tags
-func (m *Metrics) allowMetric(key []string, tags []Tag) (bool, []Tag) {
-	m.filterLock.RLock()
-	defer m.filterLock.RUnlock()
-
-	if m.filter == nil || m.filter.Len() == 0 {
-		return m.Config.FilterDefault, tags
+func (m *Metrics) allowMetric(key []string) bool {
+	if len(m.BlockedPrefixes) > 0 {
+		if slices.ContainsString(m.BlockedPrefixes, key[0]) {
+			return false
+		}
+	}
+	if len(m.AllowedPrefixes) > 0 {
+		if !slices.ContainsString(m.BlockedPrefixes, key[0]) {
+			return true
+		}
 	}
 
-	_, allowed, ok := m.filter.Root().LongestPrefix([]byte(strings.Join(key, ".")))
-	if !ok {
-		return m.Config.FilterDefault, tags
-	}
-
-	return allowed.(bool), tags
+	return m.Config.FilterDefault
 }
 
 // Periodically collects runtime stats to publish

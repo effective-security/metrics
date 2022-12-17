@@ -2,11 +2,8 @@ package metrics
 
 import (
 	"os"
-	"sync"
 	"sync/atomic"
 	"time"
-
-	iradix "github.com/hashicorp/go-immutable-radix"
 )
 
 // Config is used to configure metrics settings
@@ -23,8 +20,8 @@ type Config struct {
 	GlobalTags           []Tag         // Tags to add to every metric
 	GlobalPrefix         string        // Prefix to add to every metric
 
-	AllowedPrefixes []string // A list of metric prefixes to allow, with '.' as the separator
-	BlockedPrefixes []string // A list of metric prefixes to block, with '.' as the separator
+	AllowedPrefixes []string // A list of the first metric prefixes to allow
+	BlockedPrefixes []string // A list of the first metric prefixes to block
 	FilterDefault   bool     // Whether to allow metrics by default
 }
 
@@ -32,10 +29,8 @@ type Config struct {
 // be used to emit
 type Metrics struct {
 	Config
-	lastNumGC  uint32
-	sink       Sink
-	filter     *iradix.Tree
-	filterLock sync.RWMutex // Lock filters and allowedLabels/blockedLabels access
+	lastNumGC uint32
+	sink      Sink
 }
 
 // Shared global metrics instance
