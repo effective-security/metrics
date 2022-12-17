@@ -55,7 +55,7 @@ func Test_DefaultWithFilter(t *testing.T) {
 	cfg.FilterDefault = true
 	im := metrics.NewInmemSink(time.Second, time.Minute)
 	prov, err := metrics.New(cfg, im)
-	prov.UpdateFilter(nil, []string{"es.test.metrics.since", "es.test.metrics.sample"})
+	prov.UpdateFilter(nil, []string{"es"})
 
 	require.NoError(t, err)
 	run(prov, 1)
@@ -63,9 +63,32 @@ func Test_DefaultWithFilter(t *testing.T) {
 	data := im.Data()
 	assert.Len(t, data, 1)
 	first := data[0]
+	assert.Empty(t, first.Counters)
+	assert.Empty(t, first.Gauges)
+	assert.Empty(t, first.Samples)
+
+	prov.UpdateFilter([]string{"es"}, nil)
+	require.NoError(t, err)
+	run(prov, 1)
+
+	data = im.Data()
+	assert.Len(t, data, 1)
+	first = data[0]
 	assert.NotEmpty(t, first.Counters)
 	assert.NotEmpty(t, first.Gauges)
-	assert.Empty(t, first.Samples)
+	assert.NotEmpty(t, first.Samples)
+
+	cfg.FilterDefault = true
+	prov.UpdateFilter(nil, nil)
+	require.NoError(t, err)
+	run(prov, 1)
+
+	data = im.Data()
+	assert.Len(t, data, 1)
+	first = data[0]
+	assert.NotEmpty(t, first.Counters)
+	assert.NotEmpty(t, first.Gauges)
+	assert.NotEmpty(t, first.Samples)
 }
 
 func Test_DefaultWithCustom(t *testing.T) {
