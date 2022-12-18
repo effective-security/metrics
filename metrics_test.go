@@ -361,7 +361,7 @@ func Test_Describe(t *testing.T) {
 func Test_DescribeHelp(t *testing.T) {
 	list := []metrics.Describe{
 		{
-			Type:         "counter",
+			Type:         metrics.TypeCounter,
 			Name:         "test",
 			Help:         "test counter metric",
 			RequiredTags: []string{"tag1", "tag2"},

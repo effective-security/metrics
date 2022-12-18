@@ -14,7 +14,7 @@ type Config struct {
 	EnableHostnameLabel  bool          // Enable adding hostname to labels
 	EnableServiceLabel   bool          // Enable adding service to labels
 	EnableRuntimeMetrics bool          // Enables profiling of runtime metrics (GC, Goroutines, Memory)
-	EnableTypePrefix     bool          // Prefixes key with a type ("counter", "gauge", "timer")
+	EnableTypePrefix     bool          // Prefixes key with a type ("counter", "gauge", "sample")
 	TimerGranularity     time.Duration // Granularity of timers.
 	ProfileInterval      time.Duration // Interval to profile runtime metrics
 	GlobalTags           []Tag         // Tags to add to every metric
@@ -162,6 +162,13 @@ func (m *Config) AllowMetric(key string) bool {
 
 	return m.FilterDefault
 }
+
+// Define metrics type const
+const (
+	TypeCounter = "counter"
+	TypeSample  = "sample"
+	TypeGauge   = "gauge"
+)
 
 // Describe provides metric description
 type Describe struct {
