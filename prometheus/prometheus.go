@@ -42,7 +42,7 @@ type Opts struct {
 	//     Expiration: 10 * time.Second,
 	//     Gauges: []GaugeDefinition{
 	//         {
-	//           Name: []string{ "application", "component", "measurement"},
+	//           Name: "application_component_measurement"},
 	//           Help: "application_component_measurement provides an example of how to declare static metrics",
 	//           ConstLabels: []metrics.Label{ { Name: "my_label", Value: "does_not_change" }, },
 	//         },
@@ -68,7 +68,7 @@ type Sink struct {
 
 // GaugeDefinition can be provided to PrometheusOpts to declare a constant gauge that is not deleted on expiry.
 type GaugeDefinition struct {
-	Name      []string
+	Name      string
 	ConstTags []metrics.Tag
 	Help      string
 }
@@ -82,7 +82,7 @@ type gauge struct {
 
 // SummaryDefinition can be provided to PrometheusOpts to declare a constant summary that is not deleted on expiry.
 type SummaryDefinition struct {
-	Name      []string
+	Name      string
 	ConstTags []metrics.Tag
 	Help      string
 }
@@ -95,7 +95,7 @@ type summary struct {
 
 // CounterDefinition can be provided to PrometheusOpts to declare a constant counter that is not deleted on expiry.
 type CounterDefinition struct {
-	Name      []string
+	Name      string
 	ConstTags []metrics.Tag
 	Help      string
 }
@@ -250,9 +250,8 @@ func initCounters(m *sync.Map, counters []CounterDefinition, help map[string]str
 
 var forbiddenCharsReplacer = strings.NewReplacer(" ", "_", ".", "_", "=", "_", "-", "_", "/", "_")
 
-func flattenKey(parts []string, labels []metrics.Tag) (string, string) {
-	key := strings.Join(parts, "_")
-	key = forbiddenCharsReplacer.Replace(key)
+func flattenKey(parts string, labels []metrics.Tag) (string, string) {
+	key := forbiddenCharsReplacer.Replace(parts)
 
 	hash := key
 	for _, label := range labels {
@@ -271,7 +270,7 @@ func prometheusLabels(labels []metrics.Tag) prometheus.Labels {
 }
 
 // SetGauge should retain the last value it is set to
-func (p *Sink) SetGauge(parts []string, val float32, labels []metrics.Tag) {
+func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	pg, ok := p.gauges.Load(hash)
 
@@ -283,7 +282,7 @@ func (p *Sink) SetGauge(parts []string, val float32, labels []metrics.Tag) {
 	// value, but since we're always setting it to time.Now(), it doesn't really matter.
 	if ok {
 		localGauge := *pg.(*gauge)
-		localGauge.Set(float64(val))
+		localGauge.Set(val)
 		localGauge.updatedAt = time.Now()
 		p.gauges.Store(hash, &localGauge)
 
@@ -299,7 +298,7 @@ func (p *Sink) SetGauge(parts []string, val float32, labels []metrics.Tag) {
 			Help:        help,
 			ConstLabels: prometheusLabels(labels),
 		})
-		g.Set(float64(val))
+		g.Set(val)
 		pg = &gauge{
 			Gauge:     g,
 			updatedAt: time.Now(),
@@ -310,14 +309,14 @@ func (p *Sink) SetGauge(parts []string, val float32, labels []metrics.Tag) {
 }
 
 // AddSample is for timing information, where quantiles are used
-func (p *Sink) AddSample(parts []string, val float32, labels []metrics.Tag) {
+func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	ps, ok := p.summaries.Load(hash)
 
 	// Does the summary already exist for this sample type?
 	if ok {
 		localSummary := *ps.(*summary)
-		localSummary.Observe(float64(val))
+		localSummary.Observe(val)
 		localSummary.updatedAt = time.Now()
 		p.summaries.Store(hash, &localSummary)
 
@@ -335,7 +334,7 @@ func (p *Sink) AddSample(parts []string, val float32, labels []metrics.Tag) {
 			ConstLabels: prometheusLabels(labels),
 			Objectives:  map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
 		})
-		s.Observe(float64(val))
+		s.Observe(val)
 		ps = &summary{
 			Summary:   s,
 			updatedAt: time.Now(),
@@ -348,11 +347,11 @@ func (p *Sink) AddSample(parts []string, val float32, labels []metrics.Tag) {
 // EmitKey is not implemented. Prometheus doesn’t offer a type for which an
 // arbitrary number of values is retained, as Prometheus works with a pull
 // model, rather than a push model.
-// func (p *Sink) EmitKey(key []string, val float32, labels []metrics.Tag) {
+// func (p *Sink) EmitKey(key string, val float64, labels []metrics.Tag) {
 // }
 
 // IncrCounter should accumulate values
-func (p *Sink) IncrCounter(parts []string, val float32, labels []metrics.Tag) {
+func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	pc, ok := p.counters.Load(hash)
 

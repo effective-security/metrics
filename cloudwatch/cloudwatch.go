@@ -250,7 +250,7 @@ const (
 )
 
 // SetGauge should retain the last value it is set to
-func (p *Sink) SetGauge(parts []string, val float32, tags []metrics.Tag) {
+func (p *Sink) SetGauge(parts []string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -279,7 +279,7 @@ func (p *Sink) SetGauge(parts []string, val float32, tags []metrics.Tag) {
 }
 
 // AddSample is for timing information, where quantiles are used
-func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
+func (p *Sink) AddSample(parts []string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -322,7 +322,7 @@ func (p *Sink) AddSample(parts []string, val float32, tags []metrics.Tag) {
 }
 
 // IncrCounter should accumulate values
-func (p *Sink) IncrCounter(parts []string, val float32, tags []metrics.Tag) {
+func (p *Sink) IncrCounter(parts []string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()

@@ -16,10 +16,10 @@ import (
 
 func run(p metrics.Provider, times int) {
 	for i := 0; i < times; i++ {
-		p.SetGauge([]string{"test", "metrics", "gauge"}, float32(i))
-		p.IncrCounter([]string{"test", "metrics", "counter"}, float32(i))
-		p.AddSample([]string{"test", "metrics", "sample"}, float32(i))
-		p.MeasureSince([]string{"test", "metrics", "since"}, time.Now().Add(-time.Duration(i)*time.Second))
+		p.SetGauge("test_metrics_gauge", float64(i))
+		p.IncrCounter("test_metrics_counter", float64(i))
+		p.AddSample("test_metrics_sample", float64(i))
+		p.MeasureSince("test_metrics_since", time.Now().Add(time.Duration(i)*time.Second))
 	}
 }
 
@@ -30,19 +30,19 @@ func Test_SetProviderPrometheus(t *testing.T) {
 		Registerer: reg,
 		CounterDefinitions: []prometheus.CounterDefinition{
 			{
-				Name: []string{"es", "test", "metrics", "counter"},
+				Name: "eses_test_metrics_countercounter",
 				Help: "counter.es_test_metrics_counter provides test count",
 			},
 		},
 		GaugeDefinitions: []prometheus.GaugeDefinition{
 			{
-				Name: []string{"es", "test", "metrics", "gauge"},
+				Name: "es_test_metrics_gauge",
 				Help: "gauge.es_test_metrics_gauge provides test gauge",
 			},
 		},
 		SummaryDefinitions: []prometheus.SummaryDefinition{
 			{
-				Name: []string{"es", "test", "metrics", "sample"},
+				Name: "es_test_metrics_sample",
 				Help: "sample.es_test_metrics_sample provides test sample",
 			},
 		},

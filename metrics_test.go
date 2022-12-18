@@ -14,10 +14,10 @@ import (
 
 func run(p metrics.Provider, times int) {
 	for i := 0; i < times; i++ {
-		p.SetGauge([]string{"test", "metrics", "gauge"}, float32(i))
-		p.IncrCounter([]string{"test", "metrics", "counter"}, float32(i))
-		p.AddSample([]string{"test", "metrics", "sample"}, float32(i))
-		p.MeasureSince([]string{"test", "metrics", "since"}, time.Now().Add(time.Duration(i)*time.Second))
+		p.SetGauge("test_metrics_gauge", float64(i))
+		p.IncrCounter("test_metrics_counter", float64(i))
+		p.AddSample("test_metrics_sample", float64(i))
+		p.MeasureSince("test_metrics_since", time.Now().Add(time.Duration(i)*time.Second))
 	}
 }
 
@@ -38,12 +38,12 @@ func Test_Default(t *testing.T) {
 	assert.Len(t, first.Samples, 2)
 
 	for k, v := range first.Counters {
-		assert.Equal(t, "es.test.metrics.counter", k)
+		assert.Equal(t, "es_test_metrics_counter", k)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
 	}
 	for k, v := range first.Samples {
-		assert.Contains(t, k, "es.test.metrics.")
+		assert.Contains(t, k, "es_test_metrics_")
 		s := v.String()
 		assert.NotEmpty(t, s)
 		assert.Contains(t, s, "Count:")
@@ -111,7 +111,7 @@ func Test_DefaultWithCustom(t *testing.T) {
 	assert.Len(t, first.Samples, 2)
 
 	for k, v := range first.Counters {
-		assert.Equal(t, fmt.Sprintf("global.es.%s.test.metrics.counter;type=global", cfg.HostName), k)
+		assert.Equal(t, fmt.Sprintf("global_es_%s_test_metrics_counter;type=global", cfg.HostName), k)
 		assert.NotEmpty(t, v.Labels)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
@@ -144,17 +144,17 @@ type mockedSink struct {
 	mock.Mock
 }
 
-func (m *mockedSink) SetGauge(key []string, val float32, labels []metrics.Tag) {
+func (m *mockedSink) SetGauge(key string, val float64, labels []metrics.Tag) {
 	m.t.Logf("SetGauge key=%v", key)
 	m.Called(key, val, labels)
 }
 
-func (m *mockedSink) IncrCounter(key []string, val float32, labels []metrics.Tag) {
+func (m *mockedSink) IncrCounter(key string, val float64, labels []metrics.Tag) {
 	m.t.Logf("IncrCounter key=%v", key)
 	m.Called(key, val, labels)
 }
 
-func (m *mockedSink) AddSample(key []string, val float32, labels []metrics.Tag) {
+func (m *mockedSink) AddSample(key string, val float64, labels []metrics.Tag) {
 	m.t.Logf("AddSample key=%v", key)
 	m.Called(key, val, labels)
 }
@@ -219,9 +219,9 @@ func Test_FanoutSink(t *testing.T) {
 
 	run(prov, 1)
 
-	fan.SetGauge([]string{"test", "metrics", "gauge"}, float32(0), nil)
-	fan.IncrCounter([]string{"test", "metrics", "counter"}, float32(0), nil)
-	fan.AddSample([]string{"test", "metrics", "sample"}, float32(0), nil)
+	fan.SetGauge("test_metrics_gauge", float64(0), nil)
+	fan.IncrCounter("test_metrics_counter", float64(0), nil)
+	fan.AddSample("test_metrics_sample", float64(0), nil)
 
 	// assert that the expectations were met
 	mocked.AssertExpectations(t)
@@ -235,10 +235,10 @@ func Test_Global(t *testing.T) {
 	require.NoError(t, err)
 
 	metrics.UpdateFilter([]string{"es"}, nil)
-	metrics.SetGauge([]string{"test", "metrics", "gauge"}, 123)
-	metrics.IncrCounter([]string{"test", "metrics", "counter"}, 123)
-	metrics.AddSample([]string{"test", "metrics", "sample"}, 123)
-	metrics.MeasureSince([]string{"test", "metrics", "since"}, time.Now())
+	metrics.SetGauge("test_metrics_gauge", 123)
+	metrics.IncrCounter("test_metrics_counter", 123)
+	metrics.AddSample("test_metrics_sample", 123)
+	metrics.MeasureSince("test_metrics_since", time.Now())
 
 	data := im.Data()
 	assert.Len(t, data, 1)
@@ -248,12 +248,12 @@ func Test_Global(t *testing.T) {
 	assert.Len(t, first.Samples, 2)
 
 	for k, v := range first.Counters {
-		assert.Equal(t, "es.test.metrics.counter", k)
+		assert.Equal(t, "es_test_metrics_counter", k)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
 	}
 	for k, v := range first.Samples {
-		assert.Contains(t, k, "es.test.metrics.")
+		assert.Contains(t, k, "es_test_metrics_")
 		s := v.String()
 		assert.NotEmpty(t, s)
 		assert.Contains(t, s, "Count:")
@@ -278,4 +278,23 @@ func Test_NewMetricSinkFromURL_InMem(t *testing.T) {
 	assert.Len(t, first.Counters, 1)
 	assert.Len(t, first.Gauges, 1)
 	assert.Len(t, first.Samples, 2)
+}
+
+func Test_StringStartsWithOneOf(t *testing.T) {
+	tcases := []struct {
+		str    string
+		slices []string
+		exp    bool
+	}{
+		{"Daniel", []string{"foo", "bar"}, false},
+		{"foo_Daniel", []string{"foo", "el"}, true},
+		{"daniel", []string{"foo", "da"}, true},
+		{"Daniel", []string{"foo", "Dan"}, true},
+	}
+	for idx, tc := range tcases {
+		res := metrics.StringStartsWithOneOf(tc.str, tc.slices)
+		if res != tc.exp {
+			t.Errorf("case %d failed", idx)
+		}
+	}
 }

@@ -2,12 +2,11 @@ package metrics
 
 import (
 	"runtime"
+	"strings"
 	"time"
-
-	"github.com/effective-security/porto/x/slices"
 )
 
-func (m *Metrics) prepare(typ string, key []string, tags ...Tag) (bool, []string, []Tag) {
+func (m *Metrics) prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
 	if len(m.GlobalTags) > 0 {
 		tags = append(tags, m.GlobalTags...)
 	}
@@ -15,28 +14,28 @@ func (m *Metrics) prepare(typ string, key []string, tags ...Tag) (bool, []string
 		if m.EnableHostnameLabel {
 			tags = append(tags, Tag{"host", m.HostName})
 		} else if m.EnableHostname {
-			key = insert(0, m.HostName, key)
+			key = m.HostName + "_" + key
 		}
 	}
 	if m.EnableTypePrefix {
-		key = insert(0, typ, key)
+		key = typ + "_" + key
 	}
 	if m.ServiceName != "" {
 		if m.EnableServiceLabel {
 			tags = append(tags, Tag{"service", m.ServiceName})
 		} else {
-			key = insert(0, m.ServiceName, key)
+			key = m.ServiceName + "_" + key
 		}
 	}
 	if m.GlobalPrefix != "" {
-		key = insert(0, m.GlobalPrefix, key)
+		key = m.GlobalPrefix + "_" + key
 	}
 
 	return m.allowMetric(key), key, tags
 }
 
 // SetGauge should retain the last value it is set to
-func (m *Metrics) SetGauge(key []string, val float32, tags ...Tag) {
+func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.prepare("gauge", key, tags...)
 	if !allowed {
 		return
@@ -45,7 +44,7 @@ func (m *Metrics) SetGauge(key []string, val float32, tags ...Tag) {
 }
 
 // IncrCounter should accumulate values
-func (m *Metrics) IncrCounter(key []string, val float32, tags ...Tag) {
+func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.prepare("counter", key, tags...)
 	if !allowed {
 		return
@@ -54,7 +53,7 @@ func (m *Metrics) IncrCounter(key []string, val float32, tags ...Tag) {
 }
 
 // AddSample is for timing information, where quantiles are used
-func (m *Metrics) AddSample(key []string, val float32, tags ...Tag) {
+func (m *Metrics) AddSample(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.prepare("sample", key, tags...)
 	if !allowed {
 		return
@@ -63,9 +62,9 @@ func (m *Metrics) AddSample(key []string, val float32, tags ...Tag) {
 }
 
 // MeasureSince is for timing information
-func (m *Metrics) MeasureSince(key []string, start time.Time, tags ...Tag) {
+func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 	elapsed := time.Since(start)
-	msec := float32(elapsed.Nanoseconds()) / float32(m.TimerGranularity)
+	msec := float64(elapsed.Nanoseconds()) / float64(m.TimerGranularity)
 
 	allowed, keys, labels := m.prepare("timer", key, tags...)
 	if !allowed {
@@ -82,14 +81,14 @@ func (m *Metrics) UpdateFilter(allow, block []string) {
 
 // Returns whether the metric should be allowed based on configured prefix filters
 // Also return the applicable tags
-func (m *Metrics) allowMetric(key []string) bool {
+func (m *Metrics) allowMetric(key string) bool {
 	if len(m.BlockedPrefixes) > 0 {
-		if slices.ContainsString(m.BlockedPrefixes, key[0]) {
+		if StringStartsWithOneOf(key, m.BlockedPrefixes) {
 			return false
 		}
 	}
 	if len(m.AllowedPrefixes) > 0 {
-		if !slices.ContainsString(m.BlockedPrefixes, key[0]) {
+		if !StringStartsWithOneOf(key, m.AllowedPrefixes) {
 			return true
 		}
 	}
@@ -109,18 +108,18 @@ func (m *Metrics) collectStats() {
 func (m *Metrics) emitRuntimeStats() {
 	// Export number of Goroutines
 	numRoutines := runtime.NumGoroutine()
-	m.SetGauge([]string{"runtime", "num_goroutines"}, float32(numRoutines))
+	m.SetGauge("runtime_num_goroutines", float64(numRoutines))
 
 	// Export memory stats
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
-	m.SetGauge([]string{"runtime", "alloc_bytes"}, float32(stats.Alloc))
-	m.SetGauge([]string{"runtime", "sys_bytes"}, float32(stats.Sys))
-	m.SetGauge([]string{"runtime", "malloc_count"}, float32(stats.Mallocs))
-	m.SetGauge([]string{"runtime", "free_count"}, float32(stats.Frees))
-	m.SetGauge([]string{"runtime", "heap_objects"}, float32(stats.HeapObjects))
-	m.SetGauge([]string{"runtime", "total_gc_pause_ns"}, float32(stats.PauseTotalNs))
-	m.SetGauge([]string{"runtime", "total_gc_runs"}, float32(stats.NumGC))
+	m.SetGauge("runtime_alloc_bytes", float64(stats.Alloc))
+	m.SetGauge("runtime_sys_bytes", float64(stats.Sys))
+	m.SetGauge("runtime_malloc_count", float64(stats.Mallocs))
+	m.SetGauge("runtime_free_count", float64(stats.Frees))
+	m.SetGauge("runtime_heap_objects", float64(stats.HeapObjects))
+	m.SetGauge("runtime_total_gc_pause_ns", float64(stats.PauseTotalNs))
+	m.SetGauge("runtime_total_gc_runs", float64(stats.NumGC))
 
 	// Export info about the last few GC runs
 	num := stats.NumGC
@@ -137,15 +136,17 @@ func (m *Metrics) emitRuntimeStats() {
 
 	for i := m.lastNumGC; i < num; i++ {
 		pause := stats.PauseNs[i%256]
-		m.AddSample([]string{"runtime", "gc_pause_ns"}, float32(pause))
+		m.AddSample("runtime_gc_pause_ns", float64(pause))
 	}
 	m.lastNumGC = num
 }
 
-// Inserts a string value at an index into the slice
-func insert(i int, v string, s []string) []string {
-	s = append(s, "")
-	copy(s[i+1:], s[i:])
-	s[i] = v
-	return s
+// StringStartsWithOneOf returns true if one of items slice is a prefix of specified value.
+func StringStartsWithOneOf(value string, items []string) bool {
+	for _, x := range items {
+		if strings.HasPrefix(value, x) {
+			return true
+		}
+	}
+	return false
 }

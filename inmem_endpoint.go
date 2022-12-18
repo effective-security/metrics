@@ -19,7 +19,7 @@ type Summary struct {
 type GaugeValue struct {
 	Name  string
 	Hash  string `json:"-"`
-	Value float32
+	Value float64
 
 	Labels        []Tag             `json:"-"`
 	DisplayLabels map[string]string `json:"Labels"`
@@ -28,7 +28,7 @@ type GaugeValue struct {
 // PointValue provides point value
 type PointValue struct {
 	Name   string
-	Points []float32
+	Points []float64
 }
 
 // SampledValue provides sample value

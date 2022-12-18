@@ -13,10 +13,10 @@ does not have `xxxWithValues` and has only 4 methods.
 ```go
 // Provider basics
 type Provider interface {
-	SetGauge(key []string, val float32, tags ...Tag)
-	IncrCounter(key []string, val float32, tags ...Tag)
-	AddSample(key []string, val float32, tags ...Tag)
-	MeasureSince(key []string, start time.Time, tags ...Tag)
+	SetGauge(key string, val float64, tags ...Tag)
+	IncrCounter(key string, val float64, tags ...Tag)
+	AddSample(key string, val float64, tags ...Tag)
+	MeasureSince(key string, start time.Time, tags ...Tag)
 }
 ```
 
@@ -37,11 +37,11 @@ to any type of backend.
 ```go
 type Sink interface {
 	// SetGauge should retain the last value it is set to
-	SetGauge(key []string, val float32, tags []Tag)
+	SetGauge(key string, val float64, tags []Tag)
 	// IncrCounter should accumulate values
-	IncrCounter(key []string, val float32, tags []Tag)
+	IncrCounter(key string, val float64, tags []Tag)
 	// AddSample is for timing information, where quantiles are used
-	AddSample(key []string, val float32, tags []Tag)
+	AddSample(key string, val float64, tags []Tag)
 }
 ```
 

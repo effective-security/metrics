@@ -35,7 +35,7 @@ func Test_NewInmemSink(t *testing.T) {
 
 	d := data[0]
 	for k, v := range d.Counters {
-		assert.Equal(t, "counter.test.metrics.counter;host=test;service=test", k)
+		assert.Equal(t, "counter_test_metrics_counter;host=test;service=test", k)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
 	}
