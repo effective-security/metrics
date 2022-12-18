@@ -8,7 +8,7 @@ import (
 
 // SetGauge should retain the last value it is set to
 func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.Prepare("gauge", key, tags...)
+	allowed, keys, labels := m.Prepare(TypeGauge, key, tags...)
 	if !allowed {
 		return
 	}
@@ -17,7 +17,7 @@ func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
 
 // IncrCounter should accumulate values
 func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.Prepare("counter", key, tags...)
+	allowed, keys, labels := m.Prepare(TypeCounter, key, tags...)
 	if !allowed {
 		return
 	}
@@ -26,7 +26,7 @@ func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
 
 // AddSample is for timing information, where quantiles are used
 func (m *Metrics) AddSample(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.Prepare("sample", key, tags...)
+	allowed, keys, labels := m.Prepare(TypeSample, key, tags...)
 	if !allowed {
 		return
 	}
@@ -38,7 +38,7 @@ func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 	elapsed := time.Since(start)
 	msec := float64(elapsed.Nanoseconds()) / float64(m.TimerGranularity)
 
-	allowed, keys, labels := m.Prepare("timer", key, tags...)
+	allowed, keys, labels := m.Prepare(TypeSample, key, tags...)
 	if !allowed {
 		return
 	}
