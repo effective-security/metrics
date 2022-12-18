@@ -116,3 +116,113 @@ func MeasureSince(key string, start time.Time, tags ...Tag) {
 func UpdateFilter(allow, block []string) {
 	globalMetrics.Load().(*Metrics).UpdateFilter(allow, block)
 }
+
+// Prepare returns final metrics name and tags to emit
+func (m *Config) Prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
+	if len(m.GlobalTags) > 0 {
+		tags = append(tags, m.GlobalTags...)
+	}
+	if m.HostName != "" {
+		if m.EnableHostnameLabel {
+			tags = append(tags, Tag{"host", m.HostName})
+		} else if m.EnableHostname {
+			key = m.HostName + "_" + key
+		}
+	}
+	if m.EnableTypePrefix {
+		key = typ + "_" + key
+	}
+	if m.ServiceName != "" {
+		if m.EnableServiceLabel {
+			tags = append(tags, Tag{"service", m.ServiceName})
+		} else {
+			key = m.ServiceName + "_" + key
+		}
+	}
+	if m.GlobalPrefix != "" {
+		key = m.GlobalPrefix + "_" + key
+	}
+
+	return m.AllowMetric(key), key, tags
+}
+
+// AllowMetric returns whether the metric should be allowed based on configured prefix filters
+// Also return the applicable tags
+func (m *Config) AllowMetric(key string) bool {
+	if len(m.BlockedPrefixes) > 0 {
+		if StringStartsWithOneOf(key, m.BlockedPrefixes) {
+			return false
+		}
+	}
+	if len(m.AllowedPrefixes) > 0 {
+		if !StringStartsWithOneOf(key, m.AllowedPrefixes) {
+			return true
+		}
+	}
+
+	return m.FilterDefault
+}
+
+// Describe provides metric description
+type Describe struct {
+	// Type of the metric: counter|gauge|summary
+	Type string
+	// Name is the metric name
+	Name string
+	// Help provides description
+	Help string
+	// RequiredTags is a list of metric tags
+	RequiredTags []string
+}
+
+// Tags constructs tags. The size and order of the vals must much the ones in the description
+func (d *Describe) Tags(vals ...string) []Tag {
+	count := len(d.RequiredTags)
+	if len(vals) != count {
+		panic("Invalid list of tag values. It should match the size and order of the description")
+	}
+	if count == 0 {
+		return nil
+	}
+
+	tags := make([]Tag, count)
+	for i, val := range vals {
+		tags[i] = Tag{
+			Name:  d.RequiredTags[i],
+			Value: val,
+		}
+	}
+	return tags
+}
+
+// SetGauge should retain the last value it is set to
+func (d *Describe) SetGauge(val float64, tags ...string) {
+	SetGauge(d.Name, val, d.Tags(tags...)...)
+}
+
+// IncrCounter should accumulate values
+func (d *Describe) IncrCounter(val float64, tags ...string) {
+	IncrCounter(d.Name, val, d.Tags(tags...)...)
+}
+
+// AddSample is for timing information, where quantiles are used
+func (d *Describe) AddSample(val float64, tags ...string) {
+	AddSample(d.Name, val, d.Tags(tags...)...)
+}
+
+// MeasureSince emits sample
+func (d *Describe) MeasureSince(start time.Time, tags ...string) {
+	MeasureSince(d.Name, start, d.Tags(tags...)...)
+}
+
+// Help returns prepared help for described metrics
+func (m *Config) Help(descs []Describe) map[string]string {
+	h := make(map[string]string)
+	for _, d := range descs {
+		allowed, key, _ := m.Prepare(d.Type, d.Name)
+		if allowed {
+			h[key] = d.Help
+		}
+	}
+	return h
+}

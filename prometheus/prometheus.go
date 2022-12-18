@@ -52,6 +52,9 @@ type Opts struct {
 	SummaryDefinitions []SummaryDefinition
 	CounterDefinitions []CounterDefinition
 	Name               string
+
+	// Help of the metrics
+	Help map[string]string
 }
 
 // Sink provides a MetricSink that can be used
@@ -122,8 +125,11 @@ func NewSinkFrom(opts Opts) (*Sink, error) {
 		summaries:  sync.Map{},
 		counters:   sync.Map{},
 		expiration: opts.Expiration,
-		help:       make(map[string]string),
+		help:       opts.Help,
 		name:       name,
+	}
+	if sink.help == nil {
+		sink.help = make(map[string]string)
 	}
 
 	initGauges(&sink.gauges, opts.GaugeDefinitions, sink.help)
@@ -210,7 +216,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 func initGauges(m *sync.Map, gauges []GaugeDefinition, help map[string]string) {
 	for _, g := range gauges {
 		key, hash := flattenKey(g.Name, g.ConstTags)
-		help["gauge."+key] = g.Help
+		help[key] = g.Help
 		pG := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name:        key,
 			Help:        g.Help,
@@ -223,7 +229,7 @@ func initGauges(m *sync.Map, gauges []GaugeDefinition, help map[string]string) {
 func initSummaries(m *sync.Map, summaries []SummaryDefinition, help map[string]string) {
 	for _, s := range summaries {
 		key, hash := flattenKey(s.Name, s.ConstTags)
-		help["summary."+key] = s.Help
+		help[key] = s.Help
 		pS := prometheus.NewSummary(prometheus.SummaryOpts{
 			Name:        key,
 			Help:        s.Help,
@@ -238,7 +244,7 @@ func initSummaries(m *sync.Map, summaries []SummaryDefinition, help map[string]s
 func initCounters(m *sync.Map, counters []CounterDefinition, help map[string]string) {
 	for _, c := range counters {
 		key, hash := flattenKey(c.Name, c.ConstTags)
-		help["counter."+key] = c.Help
+		help[key] = c.Help
 		pC := prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        key,
 			Help:        c.Help,
@@ -289,7 +295,7 @@ func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 		// The gauge does not exist, create the gauge and allow it to be deleted
 	} else {
 		help := key
-		existingHelp, ok := p.help["gauge."+key]
+		existingHelp, ok := p.help[key]
 		if ok {
 			help = existingHelp
 		}
@@ -323,7 +329,7 @@ func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 		// The summary does not exist, create the Summary and allow it to be deleted
 	} else {
 		help := key
-		existingHelp, ok := p.help["summary."+key]
+		existingHelp, ok := p.help[key]
 		if ok {
 			help = existingHelp
 		}
@@ -365,7 +371,7 @@ func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 		// The counter does not exist yet, create it and allow it to be deleted
 	} else {
 		help := key
-		existingHelp, ok := p.help["counter."+key]
+		existingHelp, ok := p.help[key]
 		if ok {
 			help = existingHelp
 		}

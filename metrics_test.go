@@ -298,3 +298,98 @@ func Test_StringStartsWithOneOf(t *testing.T) {
 		}
 	}
 }
+
+func Test_Describe(t *testing.T) {
+	mymetric := metrics.Describe{
+		Name:         "test",
+		Help:         "test metric",
+		RequiredTags: []string{"tag1", "tag2"},
+	}
+	mymetricNoTags := metrics.Describe{
+		Name: "simple",
+		Help: "test metric",
+	}
+
+	mocked := &mockedSink{t: t}
+
+	// setup expectations
+	mocked.On("IncrCounter", mymetric.Name, float64(1), []metrics.Tag{
+		{Name: "tag1", Value: "1"},
+		{Name: "tag2", Value: "2"},
+	}).Times(2)
+	mocked.On("AddSample", mymetricNoTags.Name, float64(1), []metrics.Tag(nil)).Times(1)
+
+	mocked.IncrCounter(mymetric.Name, 1, mymetric.Tags("1", "2"))
+	mocked.IncrCounter(mymetric.Name, 1, mymetric.Tags("1", "2"))
+	mocked.AddSample(mymetricNoTags.Name, 1, mymetricNoTags.Tags())
+
+	// assert that the expectations were met
+	mocked.AssertExpectations(t)
+
+	assert.Panics(t, func() {
+		mymetric.IncrCounter(1)
+	})
+	assert.Panics(t, func() {
+		mymetric.IncrCounter(1, "only one")
+	})
+	assert.Panics(t, func() {
+		mymetric.IncrCounter(1, "1", "2", "3")
+	})
+	assert.Panics(t, func() {
+		mymetric.SetGauge(1)
+	})
+	assert.Panics(t, func() {
+		mymetric.SetGauge(1, "only one")
+	})
+	assert.Panics(t, func() {
+		mymetric.SetGauge(1, "1", "2", "3")
+	})
+	assert.Panics(t, func() {
+		mymetric.AddSample(1)
+	})
+	assert.Panics(t, func() {
+		mymetric.AddSample(1, "only one")
+	})
+	assert.Panics(t, func() {
+		mymetric.AddSample(1, "1", "2", "3")
+	})
+	assert.Panics(t, func() {
+		mymetric.MeasureSince(time.Now(), "1", "2", "3")
+	})
+}
+
+func Test_DescribeHelp(t *testing.T) {
+	list := []metrics.Describe{
+		{
+			Type:         "counter",
+			Name:         "test",
+			Help:         "test counter metric",
+			RequiredTags: []string{"tag1", "tag2"},
+		},
+		{
+			Type: "summary",
+			Name: "simple_times",
+			Help: "test summary metric",
+		},
+	}
+
+	cfg := metrics.DefaultConfig("es")
+	help := cfg.Help(list)
+	require.Len(t, help, 2)
+	assert.Equal(t, help["es_test"], "test counter metric")
+	assert.Equal(t, help["es_simple_times"], "test summary metric")
+
+	cfg = &metrics.Config{
+		ServiceName:          "es", // Use client provided service
+		HostName:             "host1",
+		EnableHostname:       false, // Enable hostname prefix
+		EnableRuntimeMetrics: false, // Enable runtime profiling
+		EnableTypePrefix:     true,  // Disable type prefix
+		FilterDefault:        true,  // Don't filter metrics by default
+		GlobalPrefix:         "global",
+		BlockedPrefixes:      []string{"global_es_summary_"},
+	}
+	help = cfg.Help(list)
+	require.Len(t, help, 1)
+	assert.Equal(t, help["global_es_counter_test"], "test counter metric")
+}

@@ -6,37 +6,9 @@ import (
 	"time"
 )
 
-func (m *Metrics) prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
-	if len(m.GlobalTags) > 0 {
-		tags = append(tags, m.GlobalTags...)
-	}
-	if m.HostName != "" {
-		if m.EnableHostnameLabel {
-			tags = append(tags, Tag{"host", m.HostName})
-		} else if m.EnableHostname {
-			key = m.HostName + "_" + key
-		}
-	}
-	if m.EnableTypePrefix {
-		key = typ + "_" + key
-	}
-	if m.ServiceName != "" {
-		if m.EnableServiceLabel {
-			tags = append(tags, Tag{"service", m.ServiceName})
-		} else {
-			key = m.ServiceName + "_" + key
-		}
-	}
-	if m.GlobalPrefix != "" {
-		key = m.GlobalPrefix + "_" + key
-	}
-
-	return m.allowMetric(key), key, tags
-}
-
 // SetGauge should retain the last value it is set to
 func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.prepare("gauge", key, tags...)
+	allowed, keys, labels := m.Prepare("gauge", key, tags...)
 	if !allowed {
 		return
 	}
@@ -45,7 +17,7 @@ func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
 
 // IncrCounter should accumulate values
 func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.prepare("counter", key, tags...)
+	allowed, keys, labels := m.Prepare("counter", key, tags...)
 	if !allowed {
 		return
 	}
@@ -54,7 +26,7 @@ func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
 
 // AddSample is for timing information, where quantiles are used
 func (m *Metrics) AddSample(key string, val float64, tags ...Tag) {
-	allowed, keys, labels := m.prepare("sample", key, tags...)
+	allowed, keys, labels := m.Prepare("sample", key, tags...)
 	if !allowed {
 		return
 	}
@@ -66,7 +38,7 @@ func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 	elapsed := time.Since(start)
 	msec := float64(elapsed.Nanoseconds()) / float64(m.TimerGranularity)
 
-	allowed, keys, labels := m.prepare("timer", key, tags...)
+	allowed, keys, labels := m.Prepare("timer", key, tags...)
 	if !allowed {
 		return
 	}
@@ -77,23 +49,6 @@ func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 func (m *Metrics) UpdateFilter(allow, block []string) {
 	m.AllowedPrefixes = allow
 	m.BlockedPrefixes = block
-}
-
-// Returns whether the metric should be allowed based on configured prefix filters
-// Also return the applicable tags
-func (m *Metrics) allowMetric(key string) bool {
-	if len(m.BlockedPrefixes) > 0 {
-		if StringStartsWithOneOf(key, m.BlockedPrefixes) {
-			return false
-		}
-	}
-	if len(m.AllowedPrefixes) > 0 {
-		if !StringStartsWithOneOf(key, m.AllowedPrefixes) {
-			return true
-		}
-	}
-
-	return m.Config.FilterDefault
 }
 
 // Periodically collects runtime stats to publish
