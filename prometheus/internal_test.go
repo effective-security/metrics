@@ -25,7 +25,7 @@ const (
 
 func TestMultipleSink(t *testing.T) {
 	gaugeDef := GaugeDefinition{
-		Name: []string{"my", "test", "gauge"},
+		Name: "my_test_gauge",
 		Help: "A gauge for testing? How helpful!",
 	}
 
@@ -48,7 +48,7 @@ func TestMultipleSink(t *testing.T) {
 	}
 
 	gaugeDef2 := GaugeDefinition{
-		Name: []string{"my2", "test", "gauge"},
+		Name: "my2_test_gauge",
 		Help: "A gauge for testing? How helpful!",
 	}
 
@@ -80,15 +80,15 @@ func TestMultipleSink(t *testing.T) {
 
 func TestDefinitions(t *testing.T) {
 	gaugeDef := GaugeDefinition{
-		Name: []string{"my", "test", "gauge"},
+		Name: "my_test_gauge",
 		Help: "A gauge for testing? How helpful!",
 	}
 	summaryDef := SummaryDefinition{
-		Name: []string{"my", "test", "summary"},
+		Name: "my_test_summary",
 		Help: "A summary for testing? How helpful!",
 	}
 	counterDef := CounterDefinition{
-		Name: []string{"my", "test", "counter"},
+		Name: "my_test_counter",
 		Help: "A counter for testing? How helpful!",
 	}
 
@@ -260,7 +260,7 @@ func TestSetGauge(t *testing.T) {
 	metricsConf.HostName = MockGetHostname()
 	metricsConf.EnableHostnameLabel = true
 	metrics.NewGlobal(metricsConf, sink)
-	metrics.SetGauge([]string{"one", "two"}, 42)
+	metrics.SetGauge("one_two", 42)
 	response := <-q
 	if response != "ok" {
 		t.Fatal(response)
@@ -269,15 +269,15 @@ func TestSetGauge(t *testing.T) {
 
 func TestDefinitions2(t *testing.T) {
 	gaugeDef := GaugeDefinition{
-		Name: []string{"my", "test", "gauge"},
+		Name: "my_test_gauge",
 		Help: "A gauge for testing? How helpful!",
 	}
 	summaryDef := SummaryDefinition{
-		Name: []string{"my", "test", "summary"},
+		Name: "my_test_summary",
 		Help: "A summary for testing? How helpful!",
 	}
 	counterDef := CounterDefinition{
-		Name: []string{"my", "test", "counter"},
+		Name: "my_test_counter",
 		Help: "A counter for testing? How helpful!",
 	}
 
@@ -341,14 +341,14 @@ func TestSinkInterface(t *testing.T) {
 func Test_flattenKey(t *testing.T) {
 	testCases := []struct {
 		name               string
-		inputParts         []string
+		inputParts         string
 		inputLabels        []metrics.Tag
 		expectedOutputKey  string
 		expectedOutputHash string
 	}{
 		{
 			name:       "no replacement needed",
-			inputParts: []string{"my", "example", "metric"},
+			inputParts: "my_example_metric",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
@@ -358,53 +358,53 @@ func Test_flattenKey(t *testing.T) {
 		},
 		{
 			name:       "key with whitespace",
-			inputParts: []string{" my ", " example ", " metric "},
+			inputParts: " my example metric ",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
 			},
-			expectedOutputKey:  "_my___example___metric_",
-			expectedOutputHash: "_my___example___metric_;foo=bar;baz=buz",
+			expectedOutputKey:  "_my_example_metric_",
+			expectedOutputHash: "_my_example_metric_;foo=bar;baz=buz",
 		},
 		{
 			name:       "key with dot",
-			inputParts: []string{".my.", ".example.", ".metric."},
+			inputParts: ".my.example.metric.",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
 			},
-			expectedOutputKey:  "_my___example___metric_",
-			expectedOutputHash: "_my___example___metric_;foo=bar;baz=buz",
+			expectedOutputKey:  "_my_example_metric_",
+			expectedOutputHash: "_my_example_metric_;foo=bar;baz=buz",
 		},
 		{
 			name:       "key with dash",
-			inputParts: []string{"-my-", "-example-", "-metric-"},
+			inputParts: "-my-example-metric-",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
 			},
-			expectedOutputKey:  "_my___example___metric_",
-			expectedOutputHash: "_my___example___metric_;foo=bar;baz=buz",
+			expectedOutputKey:  "_my_example_metric_",
+			expectedOutputHash: "_my_example_metric_;foo=bar;baz=buz",
 		},
 		{
 			name:       "key with forward slash",
-			inputParts: []string{"/my/", "/example/", "/metric/"},
+			inputParts: "/my/example/metric/",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
 			},
-			expectedOutputKey:  "_my___example___metric_",
-			expectedOutputHash: "_my___example___metric_;foo=bar;baz=buz",
+			expectedOutputKey:  "_my_example_metric_",
+			expectedOutputHash: "_my_example_metric_;foo=bar;baz=buz",
 		},
 		{
 			name:       "key with all restricted",
-			inputParts: []string{"/my-", ".example ", "metric"},
+			inputParts: "/my.example metric",
 			inputLabels: []metrics.Tag{
 				{Name: "foo", Value: "bar"},
 				{Name: "baz", Value: "buz"},
 			},
-			expectedOutputKey:  "_my___example__metric",
-			expectedOutputHash: "_my___example__metric;foo=bar;baz=buz",
+			expectedOutputKey:  "_my_example_metric",
+			expectedOutputHash: "_my_example_metric;foo=bar;baz=buz",
 		},
 	}
 

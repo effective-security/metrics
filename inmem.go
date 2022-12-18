@@ -100,7 +100,7 @@ func NewInmemSink(interval, retain time.Duration) *InmemSink {
 }
 
 // SetGauge should retain the last value it is set to
-func (i *InmemSink) SetGauge(key []string, val float32, tags []Tag) {
+func (i *InmemSink) SetGauge(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
 
@@ -110,7 +110,7 @@ func (i *InmemSink) SetGauge(key []string, val float32, tags []Tag) {
 }
 
 // IncrCounter should accumulate values
-func (i *InmemSink) IncrCounter(key []string, val float32, tags []Tag) {
+func (i *InmemSink) IncrCounter(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
 
@@ -130,7 +130,7 @@ func (i *InmemSink) IncrCounter(key []string, val float32, tags []Tag) {
 }
 
 // AddSample is for timing information, where quantiles are used
-func (i *InmemSink) AddSample(key []string, val float32, tags []Tag) {
+func (i *InmemSink) AddSample(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
 
@@ -238,19 +238,11 @@ func (i *InmemSink) getInterval() *IntervalMetrics {
 }
 
 // Flattens the key for formatting along with its tags, removes spaces
-func (i *InmemSink) flattenKeyLabels(parts []string, tags []Tag) (string, string) {
+func (i *InmemSink) flattenKeyLabels(key string, tags []Tag) (string, string) {
 	buf := &bytes.Buffer{}
 	replacer := strings.NewReplacer(" ", "_")
 
-	if len(parts) > 0 {
-		replacer.WriteString(buf, parts[0])
-	}
-	for _, part := range parts[1:] {
-		replacer.WriteString(buf, ".")
-		replacer.WriteString(buf, part)
-	}
-
-	key := buf.String()
+	replacer.WriteString(buf, key)
 
 	for _, label := range tags {
 		replacer.WriteString(buf, fmt.Sprintf(";%s=%s", label.Name, label.Value))

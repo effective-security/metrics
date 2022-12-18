@@ -93,22 +93,22 @@ func NewGlobal(conf *Config, sink Sink) (*Metrics, error) {
 // Proxy all the methods to the globalMetrics instance
 
 // SetGauge should retain the last value it is set to
-func SetGauge(key []string, val float32, tags ...Tag) {
+func SetGauge(key string, val float64, tags ...Tag) {
 	globalMetrics.Load().(*Metrics).SetGauge(key, val, tags...)
 }
 
 // IncrCounter should accumulate values
-func IncrCounter(key []string, val float32, tags ...Tag) {
+func IncrCounter(key string, val float64, tags ...Tag) {
 	globalMetrics.Load().(*Metrics).IncrCounter(key, val, tags...)
 }
 
 // AddSample is for timing information, where quantiles are used
-func AddSample(key []string, val float32, tags ...Tag) {
+func AddSample(key string, val float64, tags ...Tag) {
 	globalMetrics.Load().(*Metrics).AddSample(key, val, tags...)
 }
 
 // MeasureSince is for timing information
-func MeasureSince(key []string, start time.Time, tags ...Tag) {
+func MeasureSince(key string, start time.Time, tags ...Tag) {
 	globalMetrics.Load().(*Metrics).MeasureSince(key, start, tags...)
 }
 

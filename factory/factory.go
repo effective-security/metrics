@@ -4,7 +4,6 @@ import (
 	"net/url"
 
 	"github.com/effective-security/metrics"
-	"github.com/effective-security/metrics/statsd"
 	"github.com/pkg/errors"
 )
 
@@ -15,8 +14,8 @@ type sinkURLFactoryFunc func(*url.URL) (metrics.Sink, error)
 // sinkRegistry supports the generic NewMetricSink function by mapping URL
 // schemes to metric sink factory functions
 var sinkRegistry = map[string]sinkURLFactoryFunc{
-	"statsd": statsd.NewSinkFromURL,
-	"inmem":  metrics.NewInmemSinkFromURL,
+	"inmem": metrics.NewInmemSinkFromURL,
+	// TODO: add prometheus and CloudWatch
 }
 
 // NewMetricSinkFromURL allows a generic URL input to configure any of the

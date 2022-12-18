@@ -12,10 +12,10 @@ import (
 
 func run(p metrics.Provider, times int) {
 	for i := 0; i < times; i++ {
-		p.SetGauge([]string{"test", "metrics", "gauge"}, float32(i))
-		p.IncrCounter([]string{"test", "metrics", "counter"}, float32(i))
-		p.AddSample([]string{"test", "metrics", "sample"}, float32(i))
-		p.MeasureSince([]string{"test", "metrics", "since"}, time.Now().Add(time.Duration(i)*time.Second))
+		p.SetGauge("test_metrics_gauge", float64(i))
+		p.IncrCounter("test_metrics_counter", float64(i))
+		p.AddSample("test_metrics_sample", float64(i))
+		p.MeasureSince("test_metrics_since", time.Now().Add(time.Duration(i)*time.Second))
 	}
 }
 
@@ -47,14 +47,4 @@ func Test_NewMetricSinkFromURL_InMem_InvalidParams(t *testing.T) {
 
 	_, err = factory.NewMetricSinkFromURL("^notURL::://\x7f")
 	assert.EqualError(t, err, "parse \"^notURL::://\\x7f\": net/url: invalid control character in URL")
-}
-
-func Test_NewMetricSinkFromURL_Datadog(t *testing.T) {
-	im, err := factory.NewMetricSinkFromURL("statsd://127.0.0.1:8125")
-	require.NoError(t, err)
-	prov, err := metrics.New(&metrics.Config{
-		FilterDefault: true,
-	}, im)
-	require.NoError(t, err)
-	run(prov, 10)
 }
