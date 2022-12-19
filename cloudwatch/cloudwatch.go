@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +22,11 @@ import (
 )
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "cloudwatch")
+
+// Publisher provides interface to publish metrics
+type Publisher interface {
+	Publish(data []*cloudwatch.MetricDatum) error
+}
 
 // Config defines configuration options
 type Config struct {
@@ -50,6 +54,9 @@ type Config struct {
 
 	// WithCleanup specifies to clean up published metrics
 	WithCleanup bool
+
+	// Publisher allows to override default publisher
+	Publisher Publisher
 }
 
 // Sink provides a MetricSink that can be used
@@ -58,7 +65,6 @@ type Sink struct {
 	mu                        sync.Mutex
 	cloudWatchPublishInterval time.Duration
 	cloudWatchNamespace       string
-	cw                        *cloudwatch.CloudWatch
 	expiration                time.Duration
 	validate                  bool
 	withSampleCount           bool
@@ -67,24 +73,13 @@ type Sink struct {
 	samples                   map[string]*cloudwatch.MetricDatum
 	counters                  map[string]*cloudwatch.MetricDatum
 	updates                   map[string]time.Time
+
+	publisher Publisher
 }
 
 // NewSink initializes and returns a pointer to a CloudWatch Sink using the
 // supplied configuration, or an error if there is a problem with the configuration
 func NewSink(c *Config) (*Sink, error) {
-	if c.Namespace == "" {
-		return nil, errors.New("CloudWatchNamespace required")
-	}
-
-	region := c.AwsRegion
-	if region == "" {
-		region, _ = os.LookupEnv("AWS_DEFAULT_REGION")
-	}
-
-	if region == "" {
-		return nil, errors.New("CloudWatchRegion required")
-	}
-
 	sink := &Sink{
 		gauges:                    make(map[string]*cloudwatch.MetricDatum),
 		samples:                   make(map[string]*cloudwatch.MetricDatum),
@@ -112,13 +107,12 @@ func NewSink(c *Config) (*Sink, error) {
 		client.Timeout = 6 * time.Second
 	}
 
-	config := aws.NewConfig().WithHTTPClient(client).WithRegion(region)
-	sess, err := session.NewSession(config)
+	var err error
+	sink.publisher, err = newPublisher(c)
 	if err != nil {
-		return nil, errors.WithStack(err)
+		return nil, err
 	}
 
-	sink.cw = cloudwatch.New(sess)
 	return sink, nil
 }
 
@@ -138,9 +132,11 @@ func (p *Sink) Run(ctx context.Context) {
 			}
 			return
 		case <-ticker.C:
+			logger.KV(xlog.DEBUG, "status", "flush")
+
 			err := p.Flush()
 			if err != nil {
-				logger.KV(xlog.ERROR, "reason", "publish", "err", err)
+				logger.KV(xlog.ERROR, "reason", "flush", "err", err)
 				msg := err.Error()
 				// do not retry on expired or missing creds
 				if strings.Contains(msg, "expired") ||
@@ -160,7 +156,7 @@ func (p *Sink) Flush() error {
 	// 20 is the max metrics per request
 	for len(data) > 20 {
 		put := data[0:20]
-		err := p.publishMetricsToCloudWatch(put)
+		err := p.publisher.Publish(put)
 		if err != nil {
 			return err
 		}
@@ -168,7 +164,7 @@ func (p *Sink) Flush() error {
 	}
 
 	if len(data) > 0 {
-		err := p.publishMetricsToCloudWatch(data)
+		err := p.publisher.Publish(data)
 		if err != nil {
 			return err
 		}
@@ -180,47 +176,7 @@ func (p *Sink) Flush() error {
 	return nil
 }
 
-func (p *Sink) publishMetricsToCloudWatch(data []*cloudwatch.MetricDatum) error {
-	if len(data) > 0 {
-		in := &cloudwatch.PutMetricDataInput{
-			MetricData: data,
-			Namespace:  &p.cloudWatchNamespace,
-		}
-		req, _ := p.cw.PutMetricDataRequest(in)
-		req.Handlers.Build.PushBack(compressPayload)
-		err := req.Send()
-		if err != nil {
-			return errors.Wrap(err, "failed to publish metrics")
-		}
-	}
-	return nil
-}
-
-// Compresses the payload before sending it to the API.
-// According to the documentation:
-// "Each PutMetricData request is limited to 40 KB in size for HTTP POST requests.
-// You can send a payload compressed by gzip."
-func compressPayload(r *request.Request) {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := io.Copy(zw, r.GetBody()); err != nil {
-		logger.KV(xlog.ERROR, "reason", "gzip_copy", "err", err.Error())
-		return
-	}
-	if err := zw.Close(); err != nil {
-		logger.KV(xlog.ERROR, "reason", "gzip_close", "err", err.Error())
-		return
-	}
-	r.SetBufferBody(buf.Bytes())
-	r.HTTPRequest.Header.Set("Content-Encoding", "gzip")
-}
-
-var forbiddenChars = regexp.MustCompile(`[ .=\-/]`)
-
-func (p *Sink) flattenKey(parts []string, labels []metrics.Tag) (string, string) {
-	key := strings.Join(parts, "_")
-	key = forbiddenChars.ReplaceAllString(key, "_")
-
+func (p *Sink) flattenKey(key string, labels []metrics.Tag) (string, string) {
 	hash := key
 	for _, label := range labels {
 		hash += fmt.Sprintf(";%s=%s", label.Name, label.Value)
@@ -250,11 +206,11 @@ const (
 )
 
 // SetGauge should retain the last value it is set to
-func (p *Sink) SetGauge(parts []string, val float64, tags []metrics.Tag) {
+func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	key, hash := p.flattenKey(parts, tags)
+	key, hash := p.flattenKey(key, tags)
 	p.updates[hash] = now
 	g, ok := p.gauges[hash]
 	if !ok {
@@ -279,13 +235,13 @@ func (p *Sink) SetGauge(parts []string, val float64, tags []metrics.Tag) {
 }
 
 // AddSample is for timing information, where quantiles are used
-func (p *Sink) AddSample(parts []string, val float64, tags []metrics.Tag) {
+func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
 	val64 := float64(val)
 	valPtr := aws.Float64(val64)
-	key, hash := p.flattenKey(parts, tags)
+	key, hash := p.flattenKey(key, tags)
 	p.updates[hash] = now
 	g, ok := p.samples[hash]
 	if !ok {
@@ -322,11 +278,11 @@ func (p *Sink) AddSample(parts []string, val float64, tags []metrics.Tag) {
 }
 
 // IncrCounter should accumulate values
-func (p *Sink) IncrCounter(parts []string, val float64, tags []metrics.Tag) {
+func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	key, hash := p.flattenKey(parts, tags)
+	key, hash := p.flattenKey(key, tags)
 	p.updates[hash] = now
 	g, ok := p.counters[hash]
 	if !ok {
@@ -427,4 +383,84 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 		}
 	}
 	return data
+}
+
+type awscw struct {
+	cw                  *cloudwatch.CloudWatch
+	cloudWatchNamespace string
+}
+
+func newPublisher(c *Config) (Publisher, error) {
+	if c.Publisher != nil {
+		return c.Publisher, nil
+	}
+
+	if c.Namespace == "" {
+		return nil, errors.New("CloudWatchNamespace required")
+	}
+
+	region := c.AwsRegion
+	if region == "" {
+		region, _ = os.LookupEnv("AWS_DEFAULT_REGION")
+	}
+
+	if region == "" {
+		return nil, errors.New("CloudWatchRegion required")
+	}
+
+	var client = http.DefaultClient
+	if c.PublishTimeout > 0 {
+		client.Timeout = c.PublishTimeout
+	} else {
+		client.Timeout = 6 * time.Second
+	}
+
+	config := aws.NewConfig().WithHTTPClient(client).WithRegion(region)
+	sess, err := session.NewSession(config)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	p := &awscw{
+		cw:                  cloudwatch.New(sess),
+		cloudWatchNamespace: c.Namespace,
+	}
+
+	return p, nil
+}
+
+// Publish metrics
+func (p *awscw) Publish(data []*cloudwatch.MetricDatum) error {
+	if len(data) > 0 {
+		in := &cloudwatch.PutMetricDataInput{
+			MetricData: data,
+			Namespace:  &p.cloudWatchNamespace,
+		}
+		req, _ := p.cw.PutMetricDataRequest(in)
+		req.Handlers.Build.PushBack(compressPayload)
+		err := req.Send()
+		if err != nil {
+			return errors.Wrap(err, "failed to publish metrics")
+		}
+	}
+	return nil
+}
+
+// Compresses the payload before sending it to the API.
+// According to the documentation:
+// "Each PutMetricData request is limited to 40 KB in size for HTTP POST requests.
+// You can send a payload compressed by gzip."
+func compressPayload(r *request.Request) {
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := io.Copy(zw, r.GetBody()); err != nil {
+		logger.KV(xlog.ERROR, "reason", "gzip_copy", "err", err.Error())
+		return
+	}
+	if err := zw.Close(); err != nil {
+		logger.KV(xlog.ERROR, "reason", "gzip_close", "err", err.Error())
+		return
+	}
+	r.SetBufferBody(buf.Bytes())
+	r.HTTPRequest.Header.Set("Content-Encoding", "gzip")
 }
