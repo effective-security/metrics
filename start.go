@@ -4,7 +4,11 @@ import (
 	"os"
 	"sync/atomic"
 	"time"
+
+	"github.com/effective-security/xlog"
 )
+
+var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "metrics")
 
 // Config is used to configure metrics settings
 type Config struct {
@@ -186,7 +190,13 @@ type Describe struct {
 func (d *Describe) Tags(vals ...string) []Tag {
 	count := len(d.RequiredTags)
 	if len(vals) != count {
-		panic("Invalid list of tag values. It should match the size and order of the description")
+		logger.KV(xlog.ERROR,
+			"reason", "invalid_tags",
+			"metric", d.Name,
+			"required", count,
+			"provided", len(vals),
+		)
+		return nil
 	}
 	if count == 0 {
 		return nil
