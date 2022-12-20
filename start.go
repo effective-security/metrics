@@ -223,7 +223,7 @@ func (d *Describe) MeasureSince(start time.Time, tags ...string) {
 }
 
 // Help returns prepared help for described metrics
-func (m *Config) Help(descs []Describe) map[string]string {
+func (m *Config) Help(descs []*Describe) map[string]string {
 	h := make(map[string]string)
 	for _, d := range descs {
 		allowed, key, _ := m.Prepare(d.Type, d.Name)

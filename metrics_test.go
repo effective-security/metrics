@@ -359,7 +359,7 @@ func Test_Describe(t *testing.T) {
 }
 
 func Test_DescribeHelp(t *testing.T) {
-	list := []metrics.Describe{
+	list := []*metrics.Describe{
 		{
 			Type:         metrics.TypeCounter,
 			Name:         "test",
