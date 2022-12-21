@@ -1,12 +1,15 @@
 package metrics_test
 
 import (
+	"bufio"
+	"bytes"
 	"fmt"
 	"net/url"
 	"testing"
 	"time"
 
 	"github.com/effective-security/metrics"
+	"github.com/effective-security/xlog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -300,6 +303,10 @@ func Test_StringStartsWithOneOf(t *testing.T) {
 }
 
 func Test_Describe(t *testing.T) {
+	var b bytes.Buffer
+	writer := bufio.NewWriter(&b)
+	xlog.SetFormatter(xlog.NewStringFormatter(writer).Options(xlog.FormatSkipTime, xlog.FormatNoCaller))
+
 	mymetric := metrics.Describe{
 		Name:         "test",
 		Help:         "test metric",
@@ -318,54 +325,23 @@ func Test_Describe(t *testing.T) {
 		{Name: "tag2", Value: "2"},
 	}).Times(2)
 	mocked.On("AddSample", mymetricNoTags.Name, float64(1), []metrics.Tag(nil)).Times(1)
+	mocked.On("IncrCounter", mymetric.Name, float64(1), []metrics.Tag{{Name: "invalid_tags", Value: "0"}}).Times(1)
+	mocked.On("AddSample", mymetricNoTags.Name, float64(1), []metrics.Tag{{Name: "invalid_tags", Value: "2"}}).Times(1)
 
 	mocked.IncrCounter(mymetric.Name, 1, mymetric.Tags("1", "2"))
 	mocked.IncrCounter(mymetric.Name, 1, mymetric.Tags("1", "2"))
 	mocked.AddSample(mymetricNoTags.Name, 1, mymetricNoTags.Tags())
+	mocked.IncrCounter(mymetric.Name, 1, mymetric.Tags())
+	mocked.AddSample(mymetricNoTags.Name, 1, mymetricNoTags.Tags("1", "2"))
 
 	// assert that the expectations were met
 	mocked.AssertExpectations(t)
-	/*
-		assert.Panics(t, func() {
-			mymetric.IncrCounter(1)
-		})
 
-		assert.Panics(t, func() {
-			mymetric.IncrCounter(1, "only one")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.IncrCounter(1, "1", "2", "3")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.SetGauge(1)
-		})
-
-		assert.Panics(t, func() {
-			mymetric.SetGauge(1, "only one")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.SetGauge(1, "1", "2", "3")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.AddSample(1)
-		})
-
-		assert.Panics(t, func() {
-			mymetric.AddSample(1, "only one")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.AddSample(1, "1", "2", "3")
-		})
-
-		assert.Panics(t, func() {
-			mymetric.MeasureSince(time.Now(), "1", "2", "3")
-		})
-	*/
+	result := b.String()
+	exp := `level=E pkg=metrics reason="invalid_tags" metric="test" required=2 provided=0
+level=E pkg=metrics reason="invalid_tags" metric="simple" required=0 provided=2
+`
+	assert.Equal(t, exp, result)
 }
 
 func Test_DescribeHelp(t *testing.T) {
