@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"fmt"
 	"os"
 	"sync/atomic"
 	"time"
@@ -188,21 +189,22 @@ type Describe struct {
 
 // Tags constructs tags. The size and order of the vals must much the ones in the description
 func (d *Describe) Tags(vals ...string) []Tag {
-	count := len(d.RequiredTags)
-	if len(vals) != count {
+	required := len(d.RequiredTags)
+	provided := len(vals)
+	if provided != required {
 		logger.KV(xlog.ERROR,
 			"reason", "invalid_tags",
 			"metric", d.Name,
-			"required", count,
-			"provided", len(vals),
+			"required", required,
+			"provided", provided,
 		)
-		return nil
+		return []Tag{{Name: "invalid_tags", Value: fmt.Sprintf("%d", provided)}}
 	}
-	if count == 0 {
+	if required == 0 {
 		return nil
 	}
 
-	tags := make([]Tag, count)
+	tags := make([]Tag, required)
 	for i, val := range vals {
 		tags[i] = Tag{
 			Name:  d.RequiredTags[i],
@@ -233,12 +235,15 @@ func (d *Describe) MeasureSince(start time.Time, tags ...string) {
 }
 
 // Help returns prepared help for described metrics
-func (m *Config) Help(descs []*Describe) map[string]string {
+func (m *Config) Help(providers ...[]*Describe) map[string]string {
 	h := make(map[string]string)
-	for _, d := range descs {
-		allowed, key, _ := m.Prepare(d.Type, d.Name)
-		if allowed {
-			h[key] = d.Help
+
+	for _, descs := range providers {
+		for _, d := range descs {
+			allowed, key, _ := m.Prepare(d.Type, d.Name)
+			if allowed {
+				h[key] = d.Help
+			}
 		}
 	}
 	return h
