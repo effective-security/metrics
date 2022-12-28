@@ -1,0 +1,12 @@
+run:
+  skip-files:
+    - ".*_test\\.go$"
+
+linters:
+  enable:
+    - revive
+
+issues:
+  exclude:
+    - S1009 # should omit nil check; len() for []*github.com/aws/aws-sdk-go/service/cloudwatch.Dimension is defined as zero (gosimple)
+    - S1012 # should use `time.Since` instead of `time.Now().Sub` (gosimple)

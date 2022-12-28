@@ -242,10 +242,10 @@ func (i *InmemSink) flattenKeyLabels(key string, tags []Tag) (string, string) {
 	buf := &bytes.Buffer{}
 	replacer := strings.NewReplacer(" ", "_")
 
-	replacer.WriteString(buf, key)
+	_, _ = replacer.WriteString(buf, key)
 
 	for _, label := range tags {
-		replacer.WriteString(buf, fmt.Sprintf(";%s=%s", label.Name, label.Value))
+		_, _ = replacer.WriteString(buf, fmt.Sprintf(";%s=%s", label.Name, label.Value))
 	}
 
 	return buf.String(), key
