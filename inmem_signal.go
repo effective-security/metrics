@@ -102,7 +102,7 @@ func (i *InmemSignal) dumpStats() {
 	}
 
 	// Write out the bytes
-	i.w.Write(buf.Bytes())
+	_, _ = i.w.Write(buf.Bytes())
 }
 
 // Flattens the key for formatting along with its labels, removes spaces
@@ -111,8 +111,8 @@ func (i *InmemSignal) flattenLabels(name string, labels []Tag) string {
 	replacer := strings.NewReplacer(" ", "_", ":", "_")
 
 	for _, label := range labels {
-		replacer.WriteString(buf, ".")
-		replacer.WriteString(buf, label.Value)
+		_, _ = replacer.WriteString(buf, ".")
+		_, _ = replacer.WriteString(buf, label.Value)
 	}
 
 	return buf.String()
