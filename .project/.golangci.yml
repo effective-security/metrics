@@ -1,0 +1,9 @@
+run:
+  skip-files: []
+
+linters:
+  enable:
+    - revive
+
+issues:
+  exclude:
