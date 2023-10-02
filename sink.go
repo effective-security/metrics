@@ -33,13 +33,13 @@ type Provider interface {
 type BlackholeSink struct{}
 
 // SetGauge should retain the last value it is set to
-func (*BlackholeSink) SetGauge(key string, val float64, tags []Tag) {}
+func (*BlackholeSink) SetGauge(_ string, _ float64, _ []Tag) {}
 
 // IncrCounter should accumulate values
-func (*BlackholeSink) IncrCounter(key string, val float64, tags []Tag) {}
+func (*BlackholeSink) IncrCounter(_ string, _ float64, _ []Tag) {}
 
 // AddSample is for timing information, where quantiles are used
-func (*BlackholeSink) AddSample(key string, val float64, tags []Tag) {}
+func (*BlackholeSink) AddSample(_ string, _ float64, _ []Tag) {}
 
 // FanoutSink is used to sink to fanout values to multiple sinks
 type FanoutSink []Sink

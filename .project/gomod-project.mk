@@ -21,9 +21,6 @@ SHELL=/bin/bash
 #	PROJ_GOFILES
 #		List of all .go files in the project, exluding vendor and tools
 #
-#	REL_PATH_TO_GOPATH
-#		Relative path from repo to GOPATH
-#
 # Test flags:
 #
 #	TEST_RACEFLAG
@@ -51,7 +48,6 @@ ORG_NAME := $(shell .project/config_var.sh project_org)
 PROJ_NAME := $(shell .project/config_var.sh project_name)
 REPO_NAME := ${ORG_NAME}/${PROJ_NAME}
 PROJ_PACKAGE := ${REPO_NAME}
-REL_PATH_TO_GOPATH := $(shell .project/rel_gopath.sh)
 
 ## Common variables
 HOSTNAME := $(shell echo $$HOSTNAME)
@@ -67,24 +63,21 @@ COMMITS_COUNT := $(shell git rev-list --count ${GIT_HASH})
 PROD_VERSION := $(shell cat .VERSION)
 GIT_VERSION := $(shell printf %s.%d%s ${PROD_VERSION} ${COMMITS_COUNT} ${GIT_DIRTY})
 COVPATH=.coverage
+COVFILE=coverage.out
 
 # List of all .go files in the project, excluding vendor and .tools
 GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./.tools/*" -not -path "./.gopath/*")
+GOPACKAGES = $(shell go list ./...)
 
 export PROJ_DIR=$(PROJ_ROOT)
 export PROJ_BIN=$(PROJ_ROOT)/bin
 export GOBIN=$(PROJ_ROOT)/bin
-export VENDOR_SRC=$(PROJ_ROOT)/vendor
-
-# tools path
-export TOOLS_PATH := ${PROJ_DIR}/.tools
-export TOOLS_BIN := ${TOOLS_PATH}/bin
-export PATH := ${PATH}:${PROJ_BIN}:${TOOLS_BIN}
+export PATH := ${PATH}:${PROJ_BIN}
 
 # List of all .go files in the project, exluding vendor and tools
 PROJ_GOFILES = $(shell find . -type f -name '*.go' -not -path "./vendor/*" -not -path "./.gopath/*" -not -path "./.tools/*")
 
-COVERAGE_EXCLUSIONS="/rt\.go|/bindata\.go|_test.go|_mock.go|main.go"
+COVERAGE_EXCLUSIONS="/rt\.go|/bindata\.go|_test\.go|_mock\.go|main\.go"
 
 # flags
 INTEGRATION_TAG="integration"
@@ -118,10 +111,11 @@ endif
 #
 define go_test_cover
 	echo  "Testing in $(1)"
+	rm -rf ${COVPATH}
 	mkdir -p ${COVPATH}/race
 	exitCode=0 \
-	&& cd ${1} && go list $(5)/... | ( while read -r pkg; do \
-		result=`GORACE=$(4) go test $(2) $$pkg -coverpkg=$(5)/... -covermode=count $(3) \
+	&& cd $(1) && go list $(5)/... | ( while read -r pkg; do \
+		result=`GORACE=$(4) go test -p 40 $(2) $$pkg -coverpkg=$(5)/... -covermode=count $(3) \
 			-coverprofile=${COVPATH}/cc_$$(echo $$pkg | tr "/" "_").out \
 			2>&1 | grep --invert-match "warning: no packages"` \
 			&& test_result=`echo "$$result" | tail -1` \
@@ -133,13 +127,14 @@ define go_test_cover
 		&& echo "Completed with status code $$exitCode" \
 		&& if [ $$exitCode -ne "0" ] ; then echo "Test failed, exit code: $$exitCode" && exit $$exitCode ; fi )
 	cov-report -ex $(6) -cc ${COVPATH}/combined.out ${COVPATH}/cc*.out
-	cp ${COVPATH}/combined.out ${PROJ_DIR}/coverage.out
+	cp ${COVPATH}/combined.out ${PROJ_DIR}/${COVFILE}
 endef
 
 # same as go_test_cover except it also generates results in the junit format
 # assuming ${TOOLS_BIN} contains go-junit-report & cov-report
 define go_test_cover_junit
 	echo  "Testing in $(1)"
+	rm -rf ${COVPATH}
 	mkdir -p ${COVPATH}/race
 	set -o pipefail; failure=0; while read -r pkg; do \
 		cd $(1) && GORACE=$(4) go test $(2) -v $$pkg -coverpkg=$(5)/... -covermode=count $(3) \
@@ -192,37 +187,43 @@ bench:
 
 generate:
 	go generate ./...
+	gofmt -s -l -w -r 'interface{} -> any' .
 
 fmt:
 	echo "Running Fmt"
-	gofmt -s -l -w ${GOFILES_NOVENDOR}
+	gofmt -s -l -w -r 'interface{} -> any' .
 
-vet: build
+fmt-check:
+	echo "Running Fmt check"
+	gofmt -d -l -r 'interface{} -> any' .
+	@test -z "$(shell gofmt -l -r 'interface{} -> any' . | tee /dev/stderr)"
+
+vet:
 	echo "Running vet"
-	go vet ${BUILD_FLAGS} ./...
+	go vet ${BUILD_FLAGS} ${PROJ_PACKAGE}/...
 
-lint:
+lint: fmt-check vet
 	echo "Running lint"
-	golangci-lint run
+	golangci-lint run --timeout 10m0s ./...
 
-test: fmt vet lint
+test:
 	echo "Running test"
-	go test ${BUILD_FLAGS} ${TEST_RACEFLAG} ${PROJ_PACKAGE}/...
+	go test ${TEST_FLAGS} ${TEST_RACEFLAG} ${PROJ_PACKAGE}/...
 
 testshort:
 	echo "Running testshort"
-	go test ${BUILD_FLAGS} ${TEST_RACEFLAG} ./... --test.short
+	go test ${TEST_FLAGS} ${TEST_RACEFLAG} ./... --test.short
 
 # you can run a subset of tests with make sometests testname=<testnameRegex>
 sometests:
-	go test ${BUILD_FLAGS} ${TEST_RACEFLAG} ./... --test.short -run $(testname)
+	go test ${TEST_FLAGS} ${TEST_RACEFLAG} ./... --test.short -run $(testname)
 
-covtest: fmt vet lint
+covtest: fmt-check vet
 	echo "Running covtest"
 	$(call go_test_cover,${PROJ_DIR},${BUILD_FLAGS},${TEST_RACEFLAG},${TEST_GORACEOPTIONS},.,${COVERAGE_EXCLUSIONS})
 
 # Runs integration tests as well
-testint: fmt vet lint
+testint: fmt-check vet lint
 	echo "Running testint"
 	go test ${TEST_RACEFLAG} -tags=${INTEGRATION_TAG} ${PROJ_PACKAGE}/...
 
@@ -238,18 +239,6 @@ cicoverage:
 	mkdir -p ${COVPATH}/cover
 	go tool cover -html="${COVPATH}/combined.out" -o "${COVPATH}/cover/coverage.html"
 
-# as Jenkins runs citestint as well which will run all unit tests + integration tests with code coverage
-# this unitest step can skip coverage reporting which speeds it up massively
-citest: vet lint
-	echo "Running citest"
-	$(call go_test_cover_junit,${PROJ_DIR},${BUILD_FLAGS},${TEST_RACEFLAG},${TEST_GORACEOPTIONS},.,${COVERAGE_EXCLUSIONS})
-	cov-report -fmt xml -o ${COVPATH}/coverage.xml -ex ${COVERAGE_EXCLUSIONS} -cc ${COVPATH}/combined.out ${COVPATH}/cc*.out
-	cov-report -fmt ds -o ${COVPATH}/summary.xml -ex ${COVERAGE_EXCLUSIONS} ${COVPATH}/cc*.out
-
-coveralls:
-	echo "Running coveralls"
-	goveralls -v -coverprofile=coverage.out -service=travis-ci -package ./...
-
 help:
 	echo "make vars - print make variables"
 	echo "make env - pring GO environment"
@@ -263,4 +252,4 @@ help:
 	echo "make testshort - run test with -short flag"
 	echo "make covtest - run test with coverage report"
 	echo "make coverage - open coverage report"
-	echo "make coveralls - publish coverage to coveralls"
+
