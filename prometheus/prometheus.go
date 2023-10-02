@@ -166,7 +166,7 @@ func (p *Sink) Collect(c chan<- prometheus.Metric) {
 // mocking clocks or making tests timing sensitive.
 func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 	expire := p.expiration != 0
-	p.gauges.Range(func(k, v interface{}) bool {
+	p.gauges.Range(func(k, v any) bool {
 		if v == nil {
 			return true
 		}
@@ -181,7 +181,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 		g.Collect(c)
 		return true
 	})
-	p.summaries.Range(func(k, v interface{}) bool {
+	p.summaries.Range(func(k, v any) bool {
 		if v == nil {
 			return true
 		}
@@ -196,7 +196,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 		s.Collect(c)
 		return true
 	})
-	p.counters.Range(func(k, v interface{}) bool {
+	p.counters.Range(func(k, v any) bool {
 		if v == nil {
 			return true
 		}

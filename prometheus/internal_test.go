@@ -108,21 +108,21 @@ func TestDefinitions(t *testing.T) {
 	// We can't just len(x) where x is a sync.Map, so we range over the single item and assert the name in our metric
 	// definition matches the key we have for the map entry. Should fail if any metrics exist that aren't defined, or if
 	// the defined metrics don't exist.
-	sink.gauges.Range(func(key, value interface{}) bool {
+	sink.gauges.Range(func(key, value any) bool {
 		name, _ := flattenKey(gaugeDef.Name, gaugeDef.ConstTags)
 		if name != key {
 			t.Fatalf("expected my_test_gauge, got #{name}")
 		}
 		return true
 	})
-	sink.summaries.Range(func(key, value interface{}) bool {
+	sink.summaries.Range(func(key, value any) bool {
 		name, _ := flattenKey(summaryDef.Name, summaryDef.ConstTags)
 		if name != key {
 			t.Fatalf("expected my_test_summary, got #{name}")
 		}
 		return true
 	})
-	sink.counters.Range(func(key, value interface{}) bool {
+	sink.counters.Range(func(key, value any) bool {
 		name, _ := flattenKey(counterDef.Name, counterDef.ConstTags)
 		if name != key {
 			t.Fatalf("expected my_test_counter, got #{name}")
@@ -300,7 +300,7 @@ func TestDefinitions2(t *testing.T) {
 	sink.SetGauge(gaugeDef.Name, 42.0, []metrics.Tag{
 		{Name: "version", Value: "some info"},
 	})
-	sink.gauges.Range(func(key, value interface{}) bool {
+	sink.gauges.Range(func(key, value any) bool {
 		localGauge := *value.(*gauge)
 		if !strings.Contains(localGauge.Desc().String(), gaugeDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", gaugeDef.Help, localGauge.Desc().String())
@@ -311,7 +311,7 @@ func TestDefinitions2(t *testing.T) {
 	sink.AddSample(summaryDef.Name, 42.0, []metrics.Tag{
 		{Name: "version", Value: "some info"},
 	})
-	sink.summaries.Range(func(key, value interface{}) bool {
+	sink.summaries.Range(func(key, value any) bool {
 		metric := *value.(*summary)
 		if !strings.Contains(metric.Desc().String(), summaryDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", summaryDef.Help, metric.Desc().String())
@@ -322,7 +322,7 @@ func TestDefinitions2(t *testing.T) {
 	sink.IncrCounter(counterDef.Name, 42.0, []metrics.Tag{
 		{Name: "version", Value: "some info"},
 	})
-	sink.counters.Range(func(key, value interface{}) bool {
+	sink.counters.Range(func(key, value any) bool {
 		metric := *value.(*counter)
 		if !strings.Contains(metric.Desc().String(), counterDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", counterDef.Help, metric.Desc().String())
