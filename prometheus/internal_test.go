@@ -1,13 +1,13 @@
 package prometheus
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -194,7 +194,7 @@ func TestDefinitions(t *testing.T) {
 					t.Fatalf("expected defined summary sum to have value 42 after expiring, got %f", *pb.Summary.SampleSum)
 				}
 			default:
-				t.Fatalf("unexpected metric type %v", pb)
+				t.Fatalf("unexpected metric type")
 			}
 		case <-time.After(100 * time.Millisecond):
 			t.Fatalf("Timed out waiting to collect expected metric. Got %d, want %d", i, expectedNum)
@@ -232,7 +232,7 @@ func fakeServer(q chan string) *httptest.Server {
 				},
 			},
 		}
-		if !reflect.DeepEqual(m, expectedm) {
+		if jsonString(m) != jsonString(expectedm) {
 			msg := fmt.Sprintf("Unexpected samples extracted, got: %+v, want: %+v", m, expectedm)
 			q <- errors.New(msg).Error()
 		} else {
@@ -241,6 +241,14 @@ func fakeServer(q chan string) *httptest.Server {
 	}
 
 	return httptest.NewServer(http.HandlerFunc(handler))
+}
+
+func jsonString(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
 }
 
 func TestSetGauge(t *testing.T) {
