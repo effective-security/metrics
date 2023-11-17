@@ -64,7 +64,7 @@ func Test_Sink(t *testing.T) {
 	s.IncrCounter("test_counter", 1, tags)
 	s.SetGauge("test_gauge2", 1, tags)
 
-	time.Sleep(1 * time.Second)
+	//	time.Sleep(1 * time.Second)
 	err = s.Flush()
 	assert.NoError(t, err)
 
