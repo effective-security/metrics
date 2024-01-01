@@ -1,22 +1,20 @@
 package cloudwatch
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"fmt"
-	"io"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/request"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/effective-security/metrics"
+	"github.com/effective-security/x/slices"
 	"github.com/effective-security/xlog"
 	"github.com/pkg/errors"
 )
@@ -25,7 +23,8 @@ var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "clo
 
 // Publisher provides interface to publish metrics
 type Publisher interface {
-	Publish(data []*cloudwatch.MetricDatum) error
+	//Publish(ctx context.Context, data []types.MetricDatum) error
+	PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error)
 }
 
 // Config defines configuration options
@@ -33,62 +32,56 @@ type Config struct {
 	// AwsRegion is the required AWS Region to use
 	AwsRegion string
 
+	// AwsEndpoint is the optional AWS endpoint to use
+	AwsEndpoint string
+
 	// Namespace specifies the namespace under which metrics should be published.
 	Namespace string
 
 	// PublishInterval specifies the frequency with which metrics should be published to Cloudwatch.
 	PublishInterval time.Duration
 
-	// PublishTimeout is the timeout for sending metrics to Cloudwatch.
-	PublishTimeout time.Duration
+	// // PublishTimeout is the timeout for sending metrics to Cloudwatch.
+	// PublishTimeout time.Duration
 
 	// MetricsExpiry is the period after wich the metrics will be deleted from reporting if not used.
 	MetricsExpiry time.Duration
-
-	// Validate specifies to validate metrics and panic if invalid.
-	// Set this option during development
-	Validate bool
 
 	// WithSampleCount specifies to create additional _count and _sum metrics for sample
 	WithSampleCount bool
 
 	// WithCleanup specifies to clean up published metrics
 	WithCleanup bool
-
-	// Publisher allows to override default publisher
-	Publisher Publisher
 }
 
 // Sink provides a MetricSink that can be used
 // with a prometheus server.
 type Sink struct {
+	Publisher
+
 	mu                        sync.Mutex
 	cloudWatchPublishInterval time.Duration
 	cloudWatchNamespace       string
 	expiration                time.Duration
-	validate                  bool
 	withSampleCount           bool
 	withCleanup               bool
-	gauges                    map[string]*cloudwatch.MetricDatum
-	samples                   map[string]*cloudwatch.MetricDatum
-	counters                  map[string]*cloudwatch.MetricDatum
+	gauges                    map[string]*types.MetricDatum
+	samples                   map[string]*types.MetricDatum
+	counters                  map[string]*types.MetricDatum
 	updates                   map[string]time.Time
-
-	publisher Publisher
 }
 
 // NewSink initializes and returns a pointer to a CloudWatch Sink using the
 // supplied configuration, or an error if there is a problem with the configuration
 func NewSink(c *Config) (*Sink, error) {
 	sink := &Sink{
-		gauges:                    make(map[string]*cloudwatch.MetricDatum),
-		samples:                   make(map[string]*cloudwatch.MetricDatum),
-		counters:                  make(map[string]*cloudwatch.MetricDatum),
+		gauges:                    make(map[string]*types.MetricDatum),
+		samples:                   make(map[string]*types.MetricDatum),
+		counters:                  make(map[string]*types.MetricDatum),
 		updates:                   make(map[string]time.Time),
 		expiration:                c.MetricsExpiry,
 		cloudWatchPublishInterval: c.PublishInterval,
 		cloudWatchNamespace:       c.Namespace,
-		validate:                  c.Validate,
 		withSampleCount:           c.WithSampleCount,
 		withCleanup:               c.WithCleanup,
 	}
@@ -100,15 +93,8 @@ func NewSink(c *Config) (*Sink, error) {
 		sink.expiration = 60 * time.Minute
 	}
 
-	var client = http.DefaultClient
-	if c.PublishTimeout > 0 {
-		client.Timeout = c.PublishTimeout
-	} else {
-		client.Timeout = 6 * time.Second
-	}
-
 	var err error
-	sink.publisher, err = newPublisher(c)
+	sink.Publisher, err = newPublisher(c)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +112,7 @@ func (p *Sink) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			logger.KV(xlog.DEBUG, "reason", "stopping")
-			err := p.Flush()
+			err := p.Flush(ctx)
 			if err != nil {
 				logger.KV(xlog.ERROR, "reason", "Flush", "err", err)
 			}
@@ -134,7 +120,7 @@ func (p *Sink) Run(ctx context.Context) {
 		case <-ticker.C:
 			logger.KV(xlog.DEBUG, "status", "flush")
 
-			err := p.Flush()
+			err := p.Flush(ctx)
 			if err != nil {
 				logger.KV(xlog.ERROR, "reason", "flush", "err", err)
 				msg := err.Error()
@@ -149,22 +135,22 @@ func (p *Sink) Run(ctx context.Context) {
 }
 
 // Flush the data to CloudWatch
-func (p *Sink) Flush() error {
+func (p *Sink) Flush(ctx context.Context) error {
 	data := p.Data()
 	total := len(data)
 
-	// 20 is the max metrics per request
-	for len(data) > 20 {
-		put := data[0:20]
-		err := p.publisher.Publish(put)
+	// 1000 is the max metrics per request
+	for len(data) > 1000 {
+		put := data[0:1000]
+		err := p.Publish(ctx, put)
 		if err != nil {
 			return err
 		}
-		data = data[20:]
+		data = data[1000:]
 	}
 
 	if len(data) > 0 {
-		err := p.publisher.Publish(data)
+		err := p.Publish(ctx, data)
 		if err != nil {
 			return err
 		}
@@ -185,10 +171,10 @@ func (p *Sink) flattenKey(key string, labels []metrics.Tag) (string, string) {
 	return key, hash
 }
 
-func dimensions(labels []metrics.Tag) []*cloudwatch.Dimension {
-	ds := make([]*cloudwatch.Dimension, len(labels))
+func dimensions(labels []metrics.Tag) []types.Dimension {
+	ds := make([]types.Dimension, len(labels))
 	for idx, v := range labels {
-		ds[idx] = &cloudwatch.Dimension{
+		ds[idx] = types.Dimension{
 			Name:  aws.String(v.Name),
 			Value: aws.String(v.Value),
 		}
@@ -202,7 +188,7 @@ func dimensions(labels []metrics.Tag) []*cloudwatch.Dimension {
 
 const (
 	oneVal               = float64(1)
-	storageResolutionVal = int64(60)
+	storageResolutionVal = int32(60)
 )
 
 // SetGauge should retain the last value it is set to
@@ -214,18 +200,13 @@ func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 	p.updates[hash] = now
 	g, ok := p.gauges[hash]
 	if !ok {
-		g = &cloudwatch.MetricDatum{
-			Unit:              aws.String(cloudwatch.StandardUnitCount),
+		g = &types.MetricDatum{
+			Unit:              types.StandardUnitCount,
 			MetricName:        &key,
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
 			Value:             aws.Float64(float64(val)),
-			StorageResolution: aws.Int64(storageResolutionVal),
-		}
-		if p.validate {
-			if err := g.Validate(); err != nil {
-				logger.Panicf("validation failed: %s: %s", err.Error(), g.String())
-			}
+			StorageResolution: aws.Int32(storageResolutionVal),
 		}
 		p.gauges[hash] = g
 	} else {
@@ -245,23 +226,18 @@ func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
 	p.updates[hash] = now
 	g, ok := p.samples[hash]
 	if !ok {
-		g = &cloudwatch.MetricDatum{
-			Unit:              aws.String(cloudwatch.StandardUnitCount),
+		g = &types.MetricDatum{
+			Unit:              types.StandardUnitCount,
 			MetricName:        aws.String(key),
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
-			StorageResolution: aws.Int64(storageResolutionVal),
-			StatisticValues: &cloudwatch.StatisticSet{
+			StorageResolution: aws.Int32(storageResolutionVal),
+			StatisticValues: &types.StatisticSet{
 				Minimum:     valPtr,
 				Maximum:     valPtr,
 				Sum:         valPtr,
 				SampleCount: aws.Float64(oneVal),
 			},
-		}
-		if p.validate {
-			if err := g.Validate(); err != nil {
-				logger.Panicf("validation failed: %s: %s", err.Error(), g.String())
-			}
 		}
 		p.samples[hash] = g
 	} else {
@@ -286,18 +262,13 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 	p.updates[hash] = now
 	g, ok := p.counters[hash]
 	if !ok {
-		g = &cloudwatch.MetricDatum{
-			Unit:              aws.String(cloudwatch.StandardUnitCount),
+		g = &types.MetricDatum{
+			Unit:              types.StandardUnitCount,
 			MetricName:        aws.String(key),
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
-			StorageResolution: aws.Int64(storageResolutionVal),
+			StorageResolution: aws.Int32(storageResolutionVal),
 			Value:             aws.Float64(float64(val)),
-		}
-		if p.validate {
-			if err := g.Validate(); err != nil {
-				logger.Panicf("validation failed: %s: %s", err.Error(), g.String())
-			}
 		}
 		p.counters[hash] = g
 	} else {
@@ -309,11 +280,11 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 // Data returns collected metrics and allows us to enforce our expiration
 // logic to clean up ephemeral metrics if their value haven't been set for a
 // duration exceeding our allowed expiration time.
-func (p *Sink) Data() []*cloudwatch.MetricDatum {
+func (p *Sink) Data() []types.MetricDatum {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	data := make([]*cloudwatch.MetricDatum, 0, len(p.counters)+len(p.gauges)+len(p.samples))
+	data := make([]types.MetricDatum, 0, len(p.counters)+len(p.gauges)+len(p.samples))
 
 	expire := p.expiration != 0
 	now := time.Now()
@@ -323,7 +294,7 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 			delete(p.updates, k)
 			delete(p.gauges, k)
 		} else {
-			data = append(data, v)
+			data = append(data, *v)
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.gauges, k)
@@ -336,13 +307,13 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 			delete(p.updates, k)
 			delete(p.samples, k)
 		} else {
-			data = append(data, v)
+			data = append(data, *v)
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.samples, k)
 			}
 			if p.withSampleCount {
-				data = append(data, &cloudwatch.MetricDatum{
+				data = append(data, types.MetricDatum{
 					Unit:              v.Unit,
 					MetricName:        aws.String(*v.MetricName + "_count"),
 					Timestamp:         v.Timestamp,
@@ -350,7 +321,7 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 					StorageResolution: v.StorageResolution,
 					Value:             v.StatisticValues.SampleCount,
 				})
-				data = append(data, &cloudwatch.MetricDatum{
+				data = append(data, types.MetricDatum{
 					Unit:              v.Unit,
 					MetricName:        aws.String(*v.MetricName + "_sum"),
 					Timestamp:         v.Timestamp,
@@ -358,7 +329,7 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 					StorageResolution: v.StorageResolution,
 					Value:             v.StatisticValues.Sum,
 				})
-				data = append(data, &cloudwatch.MetricDatum{
+				data = append(data, types.MetricDatum{
 					Unit:              v.Unit,
 					MetricName:        aws.String(*v.MetricName + "_avg"),
 					Timestamp:         v.Timestamp,
@@ -375,7 +346,7 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 			delete(p.updates, k)
 			delete(p.counters, k)
 		} else {
-			data = append(data, v)
+			data = append(data, *v)
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.counters, k)
@@ -385,60 +356,14 @@ func (p *Sink) Data() []*cloudwatch.MetricDatum {
 	return data
 }
 
-type awscw struct {
-	cw                  *cloudwatch.CloudWatch
-	cloudWatchNamespace string
-}
-
-func newPublisher(c *Config) (Publisher, error) {
-	if c.Publisher != nil {
-		return c.Publisher, nil
-	}
-
-	if c.Namespace == "" {
-		return nil, errors.New("CloudWatchNamespace required")
-	}
-
-	region := c.AwsRegion
-	if region == "" {
-		region, _ = os.LookupEnv("AWS_DEFAULT_REGION")
-	}
-
-	if region == "" {
-		return nil, errors.New("CloudWatchRegion required")
-	}
-
-	var client = http.DefaultClient
-	if c.PublishTimeout > 0 {
-		client.Timeout = c.PublishTimeout
-	} else {
-		client.Timeout = 6 * time.Second
-	}
-
-	config := aws.NewConfig().WithHTTPClient(client).WithRegion(region)
-	sess, err := session.NewSession(config)
-	if err != nil {
-		return nil, errors.WithStack(err)
-	}
-
-	p := &awscw{
-		cw:                  cloudwatch.New(sess),
-		cloudWatchNamespace: c.Namespace,
-	}
-
-	return p, nil
-}
-
 // Publish metrics
-func (p *awscw) Publish(data []*cloudwatch.MetricDatum) error {
+func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 	if len(data) > 0 {
 		in := &cloudwatch.PutMetricDataInput{
 			MetricData: data,
 			Namespace:  &p.cloudWatchNamespace,
 		}
-		req, _ := p.cw.PutMetricDataRequest(in)
-		req.Handlers.Build.PushBack(compressPayload)
-		err := req.Send()
+		_, err := p.Publisher.PutMetricData(ctx, in)
 		if err != nil {
 			return errors.Wrap(err, "failed to publish metrics")
 		}
@@ -446,21 +371,50 @@ func (p *awscw) Publish(data []*cloudwatch.MetricDatum) error {
 	return nil
 }
 
-// Compresses the payload before sending it to the API.
-// According to the documentation:
-// "Each PutMetricData request is limited to 40 KB in size for HTTP POST requests.
-// You can send a payload compressed by gzip."
-func compressPayload(r *request.Request) {
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := io.Copy(zw, r.GetBody()); err != nil {
-		logger.KV(xlog.ERROR, "reason", "gzip_copy", "err", err.Error())
-		return
+func newPublisher(c *Config) (Publisher, error) {
+	if c.Namespace == "" {
+		return nil, errors.New("CloudWatchNamespace required")
 	}
-	if err := zw.Close(); err != nil {
-		logger.KV(xlog.ERROR, "reason", "gzip_close", "err", err.Error())
-		return
+
+	region := slices.Coalesce(c.AwsRegion, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
+	if region == "" {
+		return nil, errors.New("CloudWatchRegion required")
 	}
-	r.SetBufferBody(buf.Bytes())
-	r.HTTPRequest.Header.Set("Content-Encoding", "gzip")
+
+	awsops := []func(*awsconfig.LoadOptions) error{
+		awsconfig.WithRegion(region),
+	}
+
+	if c.AwsEndpoint != "" {
+		// https://aws.github.io/aws-sdk-go-v2/docs/configuring-sdk/endpoints/
+		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, options ...any) (aws.Endpoint, error) {
+			if svc == cloudwatch.ServiceID && reg == region {
+				ep := aws.Endpoint{
+					PartitionID:   "aws",
+					URL:           c.AwsEndpoint,
+					SigningRegion: region,
+				}
+				return ep, nil
+			}
+			// returning EndpointNotFoundError will allow the service to fallback to it's default resolution
+			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+		})
+		awsops = append(awsops, awsconfig.WithEndpointResolverWithOptions(customResolver))
+	}
+
+	id := os.Getenv("AWS_ACCESS_KEY_ID")
+	secret := os.Getenv("AWS_SECRET_ACCESS_KEY")
+	token := os.Getenv("AWS_SESSION_TOKEN")
+	if id != "" && secret != "" {
+		awsops = append(awsops, awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(id, secret, token)))
+	}
+
+	cfg, err := awsconfig.LoadDefaultConfig(context.Background(), awsops...)
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+
+	p := cloudwatch.NewFromConfig(cfg)
+
+	return p, nil
 }
