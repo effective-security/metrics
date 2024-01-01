@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	aws "github.com/aws/aws-sdk-go/service/cloudwatch"
+	awscloudwatch "github.com/aws/aws-sdk-go-v2/service/cloudwatch"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/effective-security/metrics"
 	"github.com/effective-security/metrics/cloudwatch"
 	"github.com/effective-security/xlog"
@@ -38,15 +39,14 @@ func Test_Sink(t *testing.T) {
 	cfg = cloudwatch.Config{
 		AwsRegion:       "us-west-2",
 		Namespace:       "es",
-		Publisher:       mock,
 		PublishInterval: 200 * time.Millisecond,
 		MetricsExpiry:   100 * time.Millisecond,
-		Validate:        true,
 		WithSampleCount: true,
 		WithCleanup:     true,
 	}
 	s, err := cloudwatch.NewSink(&cfg)
 	require.NoError(t, err)
+	s.Publisher = mock
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -65,7 +65,7 @@ func Test_Sink(t *testing.T) {
 	s.SetGauge("test_gauge2", 1, tags)
 
 	//	time.Sleep(1 * time.Second)
-	err = s.Flush()
+	err = s.Flush(ctx)
 	assert.NoError(t, err)
 
 	cancel()
@@ -73,12 +73,12 @@ func Test_Sink(t *testing.T) {
 }
 
 type mockPublisher struct {
-	data []*aws.MetricDatum
+	data []types.MetricDatum
 	t    *testing.T
 }
 
-func (m *mockPublisher) Publish(data []*aws.MetricDatum) error {
-	m.t.Logf("received %d", len(data))
-	m.data = append(m.data, data...)
-	return nil
+func (m *mockPublisher) PutMetricData(ctx context.Context, in *awscloudwatch.PutMetricDataInput, optFns ...func(*awscloudwatch.Options)) (*awscloudwatch.PutMetricDataOutput, error) {
+	m.t.Logf("received %d", len(in.MetricData))
+	m.data = append(m.data, in.MetricData...)
+	return &awscloudwatch.PutMetricDataOutput{}, nil
 }
