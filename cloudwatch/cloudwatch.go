@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
 	"github.com/effective-security/metrics"
-	"github.com/effective-security/x/slices"
+	"github.com/effective-security/x/values"
 	"github.com/effective-security/xlog"
 	"github.com/pkg/errors"
 )
@@ -376,7 +376,7 @@ func newPublisher(c *Config) (Publisher, error) {
 		return nil, errors.New("CloudWatchNamespace required")
 	}
 
-	region := slices.Coalesce(c.AwsRegion, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
+	region := values.Coalesce(c.AwsRegion, os.Getenv("AWS_REGION"), os.Getenv("AWS_DEFAULT_REGION"))
 	if region == "" {
 		return nil, errors.New("CloudWatchRegion required")
 	}
