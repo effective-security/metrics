@@ -7,9 +7,12 @@ import (
 	"time"
 
 	"github.com/effective-security/metrics"
+	"github.com/effective-security/xlog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/push"
 )
+
+var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "prom")
 
 var (
 	// DefaultPrometheusOpts is the default set of options used when creating a
@@ -106,7 +109,7 @@ type CounterDefinition struct {
 type counter struct {
 	prometheus.Counter
 	updatedAt time.Time
-	canDelete bool
+	//canDelete bool
 }
 
 // NewSink creates a new Sink using the default options.
@@ -166,6 +169,7 @@ func (p *Sink) Collect(c chan<- prometheus.Metric) {
 // mocking clocks or making tests timing sensitive.
 func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 	expire := p.expiration != 0
+	deleted := 0
 	p.gauges.Range(func(k, v any) bool {
 		if v == nil {
 			return true
@@ -175,6 +179,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 		if expire && lastUpdate.Add(p.expiration).Before(t) {
 			if g.canDelete {
 				p.gauges.Delete(k)
+				deleted++
 				return true
 			}
 		}
@@ -190,6 +195,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 		if expire && lastUpdate.Add(p.expiration).Before(t) {
 			if s.canDelete {
 				p.summaries.Delete(k)
+				deleted++
 				return true
 			}
 		}
@@ -201,16 +207,23 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 			return true
 		}
 		count := v.(*counter)
-		lastUpdate := count.updatedAt
-		if expire && lastUpdate.Add(p.expiration).Before(t) {
-			if count.canDelete {
-				p.counters.Delete(k)
-				return true
+		// DO NOT DELETE COUNTERS
+		/*
+			lastUpdate := count.updatedAt
+			if expire && lastUpdate.Add(p.expiration).Before(t) {
+				if count.canDelete {
+					p.counters.Delete(k)
+					deleted = append(deleted, k.(string))
+					return true
+				}
 			}
-		}
+		*/
 		count.Collect(c)
 		return true
 	})
+	if deleted > 0 {
+		logger.KV(xlog.DEBUG, "deleted_expired", deleted)
+	}
 }
 
 func initGauges(m *sync.Map, gauges []GaugeDefinition, help map[string]string) {
@@ -384,7 +397,7 @@ func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 		pc = &counter{
 			Counter:   c,
 			updatedAt: time.Now(),
-			canDelete: true,
+			//canDelete: true,
 		}
 		p.counters.Store(hash, pc)
 	}
