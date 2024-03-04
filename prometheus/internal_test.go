@@ -211,7 +211,7 @@ func fakeServer(q chan string) *httptest.Server {
 		w.WriteHeader(202)
 		w.Header().Set("Content-Type", "application/json")
 		defer r.Body.Close()
-		dec := expfmt.NewDecoder(r.Body, expfmt.FmtProtoDelim)
+		dec := expfmt.NewDecoder(r.Body, expfmt.NewFormat(expfmt.TypeProtoDelim))
 		m := &dto.MetricFamily{}
 		dec.Decode(m)
 		expectedm := &dto.MetricFamily{
