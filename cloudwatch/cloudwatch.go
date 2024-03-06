@@ -365,6 +365,10 @@ func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 		}
 		_, err := p.Publisher.PutMetricData(ctx, in)
 		if err != nil {
+			logger.KV(xlog.ERROR,
+				"reason", "publish",
+				"data", data,
+				"err", err.Error())
 			return errors.Wrap(err, "failed to publish metrics")
 		}
 	}
