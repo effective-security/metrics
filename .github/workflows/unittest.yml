@@ -73,6 +73,8 @@ jobs:
 
       - name: Checkout code
         uses: actions/checkout@v4
+      - name: Fetch History
+        run: git fetch --prune --unshallow
 
       - name: Install Go
         uses: actions/setup-go@v5
@@ -112,6 +114,7 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths: '[".VERSION"]'
+          skip_after_successful_duplicate: false
           paths_filter: |
             version:
               paths:
@@ -120,7 +123,7 @@ jobs:
 
       - name: set-tag
         run: |
-          VERSION=$(cat .VERSION).${{env.RUN_NUMBER}}
+          VERSION=$(cat .VERSION).$(git rev-list --count HEAD)
           echo "VERSION: ${VERSION}"
           echo "DIST_VERSION=${VERSION}" >> $GITHUB_ENV
           echo "git tag ${VERSION}"
