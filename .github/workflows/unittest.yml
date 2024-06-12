@@ -115,11 +115,6 @@ jobs:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths: '[".VERSION"]'
           skip_after_successful_duplicate: false
-          paths_filter: |
-            version:
-              paths:
-                - '.VERSION'
-              backtracking: 1
 
       - name: set-tag
         run: |
@@ -127,9 +122,10 @@ jobs:
           echo "VERSION: ${VERSION}"
           echo "DIST_VERSION=${VERSION}" >> $GITHUB_ENV
           echo "git tag ${VERSION}"
+          echo "should_skip: ${{steps.version-changed.outputs.should_skip}}"
 
       - name: Create Tag
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && fromJSON(steps.version-changed.outputs.paths_result).version.should_skip == 'false'
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push' && steps.version-changed.outputs.should_skip != 'true'
         uses: actions/github-script@v7
         with:
           script: |
