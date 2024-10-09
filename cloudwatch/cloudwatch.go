@@ -391,7 +391,7 @@ func newPublisher(c *Config) (Publisher, error) {
 
 	if c.AwsEndpoint != "" {
 		// https://aws.github.io/aws-sdk-go-v2/docs/configuring-sdk/endpoints/
-		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, options ...any) (aws.Endpoint, error) {
+		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, _ ...any) (aws.Endpoint, error) {
 			if svc == cloudwatch.ServiceID && reg == region {
 				ep := aws.Endpoint{
 					PartitionID:   "aws",

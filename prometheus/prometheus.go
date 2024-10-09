@@ -202,7 +202,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 		s.Collect(c)
 		return true
 	})
-	p.counters.Range(func(k, v any) bool {
+	p.counters.Range(func(_, v any) bool {
 		if v == nil {
 			return true
 		}
