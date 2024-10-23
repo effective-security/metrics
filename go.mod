@@ -10,7 +10,7 @@ require (
 	github.com/effective-security/x v0.7.42
 	github.com/effective-security/xlog v0.9.39
 	github.com/pkg/errors v0.9.1
-	github.com/prometheus/client_golang v1.20.4
+	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
 	github.com/prometheus/common v0.60.0
 	github.com/stretchr/testify v1.9.0
