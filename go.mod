@@ -12,9 +12,9 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.20.5
 	github.com/prometheus/client_model v0.6.1
-	github.com/prometheus/common v0.60.1
-	github.com/stretchr/testify v1.9.0
-	google.golang.org/protobuf v1.35.1
+	github.com/prometheus/common v0.61.0
+	github.com/stretchr/testify v1.10.0
+	google.golang.org/protobuf v1.35.2
 )
 
 require (
@@ -39,6 +39,6 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	golang.org/x/exp v0.0.0-20240416160154-fe59bbe5cc7f // indirect
-	golang.org/x/sys v0.25.0 // indirect
+	golang.org/x/sys v0.28.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
