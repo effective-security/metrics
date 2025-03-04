@@ -1,13 +1,14 @@
 module github.com/effective-security/metrics
 
 go 1.23.2
+toolchain go1.23.6
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.36.3
 	github.com/aws/aws-sdk-go-v2/config v1.29.8
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.61
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.44.0
-	github.com/effective-security/x v0.9.47
+	github.com/effective-security/x v0.9.49
 	github.com/effective-security/xlog v0.9.41
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.21.0
