@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.29.10
 	github.com/aws/aws-sdk-go-v2/credentials v1.17.63
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.44.1
-	github.com/effective-security/x v0.10.50
+	github.com/effective-security/x v0.11.52
 	github.com/effective-security/xlog v0.9.41
 	github.com/pkg/errors v0.9.1
 	github.com/prometheus/client_golang v1.21.1
