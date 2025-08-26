@@ -14,7 +14,7 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.65.0
 	github.com/stretchr/testify v1.10.0
-	google.golang.org/protobuf v1.36.7
+	google.golang.org/protobuf v1.36.8
 )
 
 require (
