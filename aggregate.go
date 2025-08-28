@@ -20,7 +20,7 @@ type AggregateSample struct {
 
 // Stddev computes a Stddev of the values
 func (a *AggregateSample) Stddev() float64 {
-	num := (float64(a.Count) * a.SumSq) - math.Pow(a.Sum, 2)
+	num := (float64(a.Count) * a.SumSq) - math.Pow(a.Sum, 2) //nolint:staticcheck // this is a math operation
 	div := float64(a.Count * (a.Count - 1))
 	if div == 0 {
 		return 0

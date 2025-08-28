@@ -71,11 +71,11 @@ func New(conf *Config, sink Sink) (*Metrics, error) {
 	met.sink = sink
 	met.UpdateFilter(conf.AllowedPrefixes, conf.BlockedPrefixes)
 
-	if met.Config.TimerGranularity == 0 {
-		met.Config.TimerGranularity = time.Millisecond
+	if met.TimerGranularity == 0 {
+		met.TimerGranularity = time.Millisecond
 	}
-	if met.Config.ProfileInterval == 0 {
-		met.Config.ProfileInterval = time.Second
+	if met.ProfileInterval == 0 {
+		met.ProfileInterval = time.Second
 	}
 
 	// Start the runtime collector

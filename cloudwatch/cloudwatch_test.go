@@ -23,7 +23,7 @@ func TestSinkInterface(t *testing.T) {
 
 func Test_Sink(t *testing.T) {
 	xlog.SetGlobalLogLevel(xlog.DEBUG)
-	os.Setenv("AWS_DEFAULT_REGION", "")
+	_ = os.Setenv("AWS_DEFAULT_REGION", "")
 
 	cfg := cloudwatch.Config{}
 	_, err := cloudwatch.NewSink(&cfg)

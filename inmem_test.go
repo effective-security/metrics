@@ -79,7 +79,7 @@ func Test_InmemSink_Signal_Signal(t *testing.T) {
 
 	time.Sleep(time.Second)
 	// send this process signal
-	syscall.Kill(syscall.Getpid(), metrics.DefaultSignal)
+	_ = syscall.Kill(syscall.Getpid(), metrics.DefaultSignal)
 	time.Sleep(time.Second)
 
 	s.Stop()
