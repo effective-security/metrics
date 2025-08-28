@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/pkg/errors"
+	"github.com/cockroachdb/errors"
 )
 
 // InmemSink provides a MetricSink that does in-memory aggregation
@@ -199,7 +199,7 @@ func (i *InmemSink) getExistingInterval(intv time.Time) *IntervalMetrics {
 	defer i.intervalLock.RUnlock()
 
 	n := len(i.intervals)
-	if n > 0 && i.intervals[n-1].Interval == intv {
+	if n > 0 && i.intervals[n-1].Interval.Equal(intv) {
 		return i.intervals[n-1]
 	}
 	return nil
@@ -211,7 +211,7 @@ func (i *InmemSink) createInterval(intv time.Time) *IntervalMetrics {
 
 	// Check for an existing interval
 	n := len(i.intervals)
-	if n > 0 && i.intervals[n-1].Interval == intv {
+	if n > 0 && i.intervals[n-1].Interval.Equal(intv) {
 		return i.intervals[n-1]
 	}
 

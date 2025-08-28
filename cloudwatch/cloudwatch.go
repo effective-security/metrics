@@ -13,10 +13,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch/types"
+	"github.com/cockroachdb/errors"
 	"github.com/effective-security/metrics"
 	"github.com/effective-security/x/values"
 	"github.com/effective-security/xlog"
-	"github.com/pkg/errors"
 )
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "cloudwatch")
@@ -363,7 +363,7 @@ func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 			MetricData: data,
 			Namespace:  &p.cloudWatchNamespace,
 		}
-		_, err := p.Publisher.PutMetricData(ctx, in)
+		_, err := p.PutMetricData(ctx, in)
 		if err != nil {
 			logger.KV(xlog.ERROR,
 				"reason", "publish",
@@ -375,7 +375,7 @@ func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 	return nil
 }
 
-func newPublisher(c *Config) (Publisher, error) {
+func newPublisher(c *Config) (Publisher, error) { //nolint:staticcheck
 	if c.Namespace == "" {
 		return nil, errors.New("CloudWatchNamespace required")
 	}
@@ -391,9 +391,9 @@ func newPublisher(c *Config) (Publisher, error) {
 
 	if c.AwsEndpoint != "" {
 		// https://aws.github.io/aws-sdk-go-v2/docs/configuring-sdk/endpoints/
-		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, _ ...any) (aws.Endpoint, error) {
+		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, _ ...any) (aws.Endpoint, error) { //nolint:staticcheck
 			if svc == cloudwatch.ServiceID && reg == region {
-				ep := aws.Endpoint{
+				ep := aws.Endpoint{ //nolint:staticcheck
 					PartitionID:   "aws",
 					URL:           c.AwsEndpoint,
 					SigningRegion: region,
@@ -401,9 +401,9 @@ func newPublisher(c *Config) (Publisher, error) {
 				return ep, nil
 			}
 			// returning EndpointNotFoundError will allow the service to fallback to it's default resolution
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{}
+			return aws.Endpoint{}, &aws.EndpointNotFoundError{} //nolint:staticcheck
 		})
-		awsops = append(awsops, awsconfig.WithEndpointResolverWithOptions(customResolver))
+		awsops = append(awsops, awsconfig.WithEndpointResolverWithOptions(customResolver)) //nolint:staticcheck
 	}
 
 	id := os.Getenv("AWS_ACCESS_KEY_ID")

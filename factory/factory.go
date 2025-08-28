@@ -3,8 +3,8 @@ package factory
 import (
 	"net/url"
 
+	"github.com/cockroachdb/errors"
 	"github.com/effective-security/metrics"
-	"github.com/pkg/errors"
 )
 
 // sinkURLFactoryFunc is an generic interface around the *SinkFromURL() function provided
