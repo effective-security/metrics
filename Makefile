@@ -21,7 +21,7 @@ clean:
 
 tools:
 	go install github.com/effective-security/cov-report/cmd/cov-report@latest
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.3.0
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.0
 	go install github.com/mattn/goveralls@latest
 
 build:
