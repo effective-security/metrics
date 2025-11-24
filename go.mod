@@ -12,7 +12,7 @@ require (
 	github.com/effective-security/xlog v0.10.48
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
-	github.com/prometheus/common v0.67.2
+	github.com/prometheus/common v0.67.4
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/protobuf v1.36.10
 )
