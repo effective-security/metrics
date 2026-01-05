@@ -41,8 +41,8 @@ github.com/cockroachdb/redact v1.1.6/go.mod h1:BVNblN9mBWFyMyqK1k3AAiSxhvhfK2oOZ
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
-github.com/effective-security/x v0.15.82 h1:oS4rJwlnKNSpN3KQKnKHsjQrjOFPwWa6+HzcaO0JAHw=
-github.com/effective-security/x v0.15.82/go.mod h1:18QptWxorv4E/OPjhmHPan6rbdcpjs/mE4fvGA6D5Os=
+github.com/effective-security/x v0.15.83 h1:M4AogFJqXnmIcO3hHws3IUzN9H5mCkC2LuaCxc5kuaw=
+github.com/effective-security/x v0.15.83/go.mod h1:4G7/+M6EyWxgAxpH7VlX5eTzeuxTAaDdMILLlRkIsFA=
 github.com/effective-security/xlog v0.10.49 h1:Aao/M9gdSKhB4QG3n8hGM0zlx9XM3xLpgaCJUcJLQ2A=
 github.com/effective-security/xlog v0.10.49/go.mod h1:8gXJBE7QsvntwnT4tP9ENnOAMGoUUYol7d+dqGNRP30=
 github.com/getsentry/sentry-go v0.40.0 h1:VTJMN9zbTvqDqPwheRVLcp0qcUcM+8eFivvGocAaSbo=
