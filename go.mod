@@ -7,7 +7,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/config v1.32.16
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.56.2
-	github.com/cockroachdb/errors v1.12.0
+	github.com/cockroachdb/errors v1.13.0
 	github.com/effective-security/x v0.16.88
 	github.com/effective-security/xlog v0.10.51
 	github.com/prometheus/client_golang v1.23.2
@@ -34,7 +34,7 @@ require (
 	github.com/cockroachdb/logtags v0.0.0-20241215232642-bb51bb14a506 // indirect
 	github.com/cockroachdb/redact v1.1.8 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
-	github.com/getsentry/sentry-go v0.44.1 // indirect
+	github.com/getsentry/sentry-go v0.46.0 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
