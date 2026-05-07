@@ -338,8 +338,8 @@ func Test_Describe(t *testing.T) {
 	mocked.AssertExpectations(t)
 
 	result := b.String()
-	exp := `level=E pkg=metrics reason="invalid_tags" metric="test" required=2 provided=0
-level=E pkg=metrics reason="invalid_tags" metric="simple" required=0 provided=2
+	exp := `level=E pkg=metrics reason="invalid_tags" metric="test" required="2" provided="0"
+level=E pkg=metrics reason="invalid_tags" metric="simple" required="0" provided="2"
 `
 	assert.Equal(t, exp, result)
 }
