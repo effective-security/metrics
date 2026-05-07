@@ -21,6 +21,7 @@ func Test_NewInmemSink(t *testing.T) {
 		EnableServiceLabel:   true,
 		EnableRuntimeMetrics: true,
 		EnableTypePrefix:     true,
+		NumberLabelPrefix:    "_",
 	}, im)
 	require.NoError(t, err)
 	run(prov, 10)
@@ -35,12 +36,12 @@ func Test_NewInmemSink(t *testing.T) {
 
 	d := data[0]
 	for k, v := range d.Counters {
-		assert.Equal(t, "counter_test_metrics_counter;host=test;service=test", k)
+		assert.Equal(t, "counter_test_metrics_counter;org_counter=_676220136511767142;host=test;service=test", k)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
 	}
 	for k, v := range d.Samples {
-		assert.Contains(t, k, "host=test;service=test")
+		assert.Contains(t, k, "=_676220136511767142;host=test;service=test")
 		s := v.String()
 		assert.NotEmpty(t, s)
 		assert.Contains(t, s, "Count:")
