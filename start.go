@@ -23,7 +23,8 @@ type Config struct {
 	TimerGranularity     time.Duration // Granularity of timers.
 	ProfileInterval      time.Duration // Interval to profile runtime metrics
 	GlobalTags           []Tag         // Tags to add to every metric
-	GlobalPrefix         string        // Prefix to add to every metric
+	GlobalPrefix         string        // Prefix to add to every metric key
+	NumberLabelPrefix    string        // Prefix to add to tag values that are 64-bit numbers
 
 	AllowedPrefixes []string // A list of the first metric prefixes to allow
 	BlockedPrefixes []string // A list of the first metric prefixes to block
@@ -34,6 +35,7 @@ type Config struct {
 // be used to emit
 type Metrics struct {
 	Config
+
 	lastNumGC uint32
 	sink      Sink
 }
@@ -122,6 +124,9 @@ func UpdateFilter(allow, block []string) {
 	globalMetrics.Load().(*Metrics).UpdateFilter(allow, block)
 }
 
+// JavaScript max number (9007199254740991)
+const maxNumberlen = 15
+
 // Prepare returns final metrics name and tags to emit
 func (m *Config) Prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
 	if len(m.GlobalTags) > 0 {
@@ -144,11 +149,35 @@ func (m *Config) Prepare(typ string, key string, tags ...Tag) (bool, string, []T
 			key = m.ServiceName + "_" + key
 		}
 	}
+
 	if m.GlobalPrefix != "" {
 		key = m.GlobalPrefix + "_" + key
 	}
 
+	if m.NumberLabelPrefix != "" {
+		for idx, tag := range tags {
+			if isBigNumber(tag.Value) {
+				tags[idx].Value = m.NumberLabelPrefix + tag.Value
+			}
+		}
+	}
+
 	return m.AllowMetric(key), key, tags
+}
+
+func isBigNumber(s string) bool {
+	if len(s) < maxNumberlen {
+		return false
+	}
+	for idx, ch := range s {
+		if idx == 0 && ch == '-' {
+			continue
+		}
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // AllowMetric returns whether the metric should be allowed based on configured prefix filters

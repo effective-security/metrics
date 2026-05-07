@@ -17,15 +17,16 @@ import (
 
 func run(p metrics.Provider, times int) {
 	for i := 0; i < times; i++ {
-		p.SetGauge("test_metrics_gauge", float64(i))
-		p.IncrCounter("test_metrics_counter", float64(i))
-		p.AddSample("test_metrics_sample", float64(i))
-		p.MeasureSince("test_metrics_since", time.Now().Add(time.Duration(i)*time.Second))
+		p.SetGauge("test_metrics_gauge", float64(i), metrics.Tag{"org_gauge", "676220136511767142"})
+		p.IncrCounter("test_metrics_counter", float64(i), metrics.Tag{"org_counter", "676220136511767142"})
+		p.AddSample("test_metrics_sample", float64(i), metrics.Tag{"org_sample", "676220136511767142"})
+		p.MeasureSince("test_metrics_since", time.Now().Add(time.Duration(i)*time.Second), metrics.Tag{"org_since", "676220136511767142"})
 	}
 }
 
 func Test_Default(t *testing.T) {
 	cfg := metrics.DefaultConfig("es")
+	cfg.NumberLabelPrefix = "_"
 	im := metrics.NewInmemSink(time.Second, time.Minute)
 	prov, err := metrics.New(cfg, im)
 	prov.UpdateFilter([]string{"es"}, nil)
@@ -41,7 +42,7 @@ func Test_Default(t *testing.T) {
 	assert.Len(t, first.Samples, 2)
 
 	for k, v := range first.Counters {
-		assert.Equal(t, "es_test_metrics_counter", k)
+		assert.Equal(t, "es_test_metrics_counter;org_counter=_676220136511767142", k)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
 	}
@@ -114,7 +115,7 @@ func Test_DefaultWithCustom(t *testing.T) {
 	assert.Len(t, first.Samples, 2)
 
 	for k, v := range first.Counters {
-		assert.Equal(t, fmt.Sprintf("global_es_%s_test_metrics_counter;type=global", cfg.HostName), k)
+		assert.Equal(t, fmt.Sprintf("global_es_%s_test_metrics_counter;org_counter=676220136511767142;type=global", cfg.HostName), k)
 		assert.NotEmpty(t, v.Labels)
 		s := v.String()
 		assert.Contains(t, s, "Count:")
