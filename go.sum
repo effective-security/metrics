@@ -43,8 +43,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/effective-security/x v0.16.91 h1:poLrICqyvaXy66yb5CJw/2oDnHbveZR+qKQMalHCwgg=
 github.com/effective-security/x v0.16.91/go.mod h1:Q3Gqt98XrwZnNRapA1zlhfRuzLJAu5oimzp5DzQVlvs=
-github.com/effective-security/xlog v0.10.53 h1:VvzCkPqa0/CTzWl7y4Exznk00QD/JSF2X/HLNJARtrc=
-github.com/effective-security/xlog v0.10.53/go.mod h1:5OJUl++O7F5LcZStQQI0Yl92UcRP1Kf9eZ5l2btrSo4=
+github.com/effective-security/xlog v0.11.54 h1:hOV5up3dGHoiY6bW1Yi5wjNG+7siuawhMXcQ10nIZLk=
+github.com/effective-security/xlog v0.11.54/go.mod h1:o+SHMLjX93I9o198OUn5DoG83ZBNM6544swMkb/L6dI=
 github.com/getsentry/sentry-go v0.46.2 h1:1jhYwrKGa3sIpo/y5iDNXS5wDoT7I1KNzMHrnK6ojns=
 github.com/getsentry/sentry-go v0.46.2/go.mod h1:evVbw2qotNUdYG8KxXbAdjOQWWvWIwKxpjdZZIvcIPw=
 github.com/go-errors/errors v1.4.2 h1:J6MZopCL4uSllY1OfXM374weqZFFItUbrImctkmUxIA=

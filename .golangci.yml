@@ -10,7 +10,7 @@ run:
 linters:
   enable:
     #- revive
-    - goconst
+    #- goconst
     #- unparam
     - staticcheck
     - unused

@@ -306,7 +306,7 @@ func Test_StringStartsWithOneOf(t *testing.T) {
 func Test_Describe(t *testing.T) {
 	var b bytes.Buffer
 	writer := bufio.NewWriter(&b)
-	xlog.SetFormatter(xlog.NewStringFormatter(writer).Options(xlog.FormatSkipTime, xlog.FormatNoCaller))
+	xlog.SetFormatter(xlog.NewStringFormatter(writer).Options(xlog.FormatSkipTime(true), xlog.FormatWithCaller(false)))
 
 	mymetric := metrics.Describe{
 		Name:         "test",
@@ -339,8 +339,8 @@ func Test_Describe(t *testing.T) {
 	mocked.AssertExpectations(t)
 
 	result := b.String()
-	exp := `level=E pkg=metrics reason="invalid_tags" metric="test" required="2" provided="0"
-level=E pkg=metrics reason="invalid_tags" metric="simple" required="0" provided="2"
+	exp := `level=E pkg=metrics reason="invalid_tags" metric="test" required=2 provided=0
+level=E pkg=metrics reason="invalid_tags" metric="simple" required=0 provided=2
 `
 	assert.Equal(t, exp, result)
 }
