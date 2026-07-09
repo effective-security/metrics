@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// Tag is used to add dimentions to metrics
+// Tag is used to add dimensions to metrics
 type Tag struct {
 	Name  string
 	Value string

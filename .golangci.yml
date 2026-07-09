@@ -1,25 +1,53 @@
 version: "2"
+
 run:
   timeout: 5m
-  modules-download-mode: readonly
-  go: "1.26"
-  goimports:
-    local-prefixes: github.com/golangci/golangci-lint
 
 linters:
   enable:
-    #- revive
-    #- goconst
-    #- unparam
-    - staticcheck
-    - unused
+    - revive
+    - asasalint
+    - bidichk
+    - copyloopvar
+    - errcheck
+    - misspell
+    #- cyclop
+
   settings:
-    goconst:
-      min-len: 3
-      min-occurrences: 3
+    revive:
+      # Maximum number of open files at the same time.
+      # See https://github.com/mgechev/revive#command-line-flags
+      # Defaults to unlimited.
+      max-open-files: 2048
+
+      # Sets the default severity.
+      # See https://github.com/mgechev/revive#configuration
+      # Default: warning
+      severity: warning
+
+      # Enable all available rules.
+      # Default: false
+      enable-all-rules: false
+
+      # Sets the default failure confidence.
+      # This means that linting errors with less than 0.8 confidence will be ignored.
+      # Default: 0.8
+      confidence: 0.1
+
+      rules:
+        # https://github.com/mgechev/revive/blob/master/RULES_DESCRIPTIONS.md#empty-lines
+        - name: empty-lines
+          severity: warning
+          disabled: false
+          exclude: [""]
+        # https://github.com/mgechev/revive/blob/master/RULES_DESCRIPTIONS.md#error-strings
+        - name: error-strings
   exclusions:
-    rules:
-      - path: _test\.go
-        linters:
-          - goconst
-          - gomnd
+    paths:
+      - mocks/.*
+      - .*_test\.go$
+
+formatters:
+  enable:
+    - goimports
+    - gofmt
