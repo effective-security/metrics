@@ -44,7 +44,7 @@ type Config struct {
 	// // PublishTimeout is the timeout for sending metrics to Cloudwatch.
 	// PublishTimeout time.Duration
 
-	// MetricsExpiry is the period after wich the metrics will be deleted from reporting if not used.
+	// MetricsExpiry is the period after which the metrics will be deleted from reporting if not used.
 	MetricsExpiry time.Duration
 
 	// WithSampleCount specifies to create additional _count and _sum metrics for sample
@@ -181,7 +181,7 @@ func dimensions(labels []metrics.Tag) []types.Dimension {
 	}
 
 	if len(ds) > 10 {
-		logger.Panicf("AWS does not support more than 10 dimentions: %v", ds)
+		logger.Panicf("AWS does not support more than 10 dimensions: %v", ds)
 	}
 	return ds
 }
