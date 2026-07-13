@@ -9,7 +9,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/cloudwatch v1.62.0
 	github.com/cockroachdb/errors v1.14.0
 	github.com/effective-security/x v0.16.95
-	github.com/effective-security/xlog v0.11.55
+	github.com/effective-security/xlog v0.11.57
 	github.com/prometheus/client_golang v1.23.2
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.70.0
