@@ -34,7 +34,7 @@ jobs:
       - name: Detect No-op Changes
         # https://github.com/fkirc/skip-duplicate-actions
         id: noop
-        uses: fkirc/skip-duplicate-actions@v5.3.1
+        uses: fkirc/skip-duplicate-actions@v5.3.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths_ignore: '["**.md", "**.png", "**.jpg", "**/Documentation/**"]'
@@ -77,7 +77,7 @@ jobs:
         run: git fetch --prune --unshallow
 
       - name: Install Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -110,7 +110,7 @@ jobs:
       - name: Detect Version Changes
         # https://github.com/fkirc/skip-duplicate-actions
         id: version-changed
-        uses: fkirc/skip-duplicate-actions@v5.3.1
+        uses: fkirc/skip-duplicate-actions@v5.3.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           paths: '[".VERSION"]'
