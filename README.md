@@ -1,7 +1,4 @@
-[![Coverage Status](https://coveralls.io/repos/github/effective-security/metrics/badge.svg?branch=main)](https://coveralls.io/github/effective-security/metrics?branch=main)
-
-metrics
-=======
+# metrics
 
 This is a fork from https://github.com/armon/go-metrics
 
@@ -10,6 +7,7 @@ expose application metrics, and profile runtime performance in a flexible manner
 
 The main difference from the original code, that the `Provider` interface
 does not have `xxxWithValues` and has only 4 methods.
+
 ```go
 // Provider basics
 type Provider interface {
@@ -25,11 +23,10 @@ which is the most popular provider.
 
 We also removed `AllowedLabels` config, as it's hard to configure in production,
 and impacts the performance.
-Developers should design better which labels are published, 
+Developers should design better which labels are published,
 to keep the cardinality on acceptable level.
 
-Sinks
------
+## Sinks
 
 The `metrics` package makes use of a `Sink` interface to support delivery
 to any type of backend.
@@ -47,23 +44,21 @@ type Sink interface {
 
 Currently the following sinks are provided:
 
-* `statsd.Sink`: Sinks to a [StatsD](https://github.com/etsy/statsd/) / statsite instance (UDP)
-* `prometheus.Sink`: Sinks to a [Prometheus](http://prometheus.io/) metrics endpoint (exposed via HTTP for scrapes)
-* `InmemSink` : Provides in-memory aggregation, can be used to export stats
-* `FanoutSink` : Sinks to multiple sinks. Enables writing to multiple statsite instances for example.
-* `BlackholeSink` : Sinks to nowhere
+- `statsd.Sink`: Sinks to a [StatsD](https://github.com/etsy/statsd/) / statsite instance (UDP)
+- `prometheus.Sink`: Sinks to a [Prometheus](http://prometheus.io/) metrics endpoint (exposed via HTTP for scrapes)
+- `InmemSink` : Provides in-memory aggregation, can be used to export stats
+- `FanoutSink` : Sinks to multiple sinks. Enables writing to multiple statsite instances for example.
+- `BlackholeSink` : Sinks to nowhere
 
 In addition to the sinks, the `InmemSignal` can be used to catch a signal,
 and dump a formatted output of recent metrics. For example, when a process gets
 a SIGUSR1, it can dump to stderr recent performance metrics for debugging.
 
-Tags
-----
+## Tags
 
 The metrics methods allow to push metrics with tags (or labels) and use some features of underlying Sinks (ex: translated into Prometheus labels).
 
-Examples
---------
+## Examples
 
 Here is an example of using the package:
 

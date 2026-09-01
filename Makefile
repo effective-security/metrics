@@ -22,11 +22,6 @@ clean:
 tools:
 	go install github.com/effective-security/cov-report/cmd/cov-report@latest
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-	go install github.com/mattn/goveralls@latest
 
 build:
 	echo "nothing to build yet"
-
-coveralls-github:
-	echo "Running coveralls"
-	goveralls -v -coverprofile=coverage.out -service=github -package ./...
