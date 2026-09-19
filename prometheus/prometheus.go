@@ -1,7 +1,6 @@
 package prometheus
 
 import (
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -14,14 +13,18 @@ import (
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "prom")
 
-var (
-	// DefaultPrometheusOpts is the default set of options used when creating a
-	// Sink.
-	DefaultPrometheusOpts = Opts{
-		Expiration: 60 * time.Second,
-		Name:       "default_prometheus_sink",
-	}
-)
+// defaultSinkName is used when Opts.Name is empty.
+const defaultSinkName = "default_prometheus_sink"
+
+// DefaultPrometheusOpts is the default set of options used when creating a
+// Sink with NewSink.
+//
+// It is a package-level variable so that it can be adjusted before the sink is
+// created; changing it afterwards has no effect.
+var DefaultPrometheusOpts = Opts{
+	Expiration: 60 * time.Second,
+	Name:       defaultSinkName,
+}
 
 // ObservationMaxAge defines the duration for which an observation stays relevant
 // for the summary. Only applies to pre-calculated quantiles, does not
@@ -29,39 +32,62 @@ var (
 // DefMaxAge.
 const ObservationMaxAge = 10 * time.Minute
 
-// Opts is used to configure the Prometheus Sink
+// summaryObjectives are the quantiles reported for every summary,
+// mapped to their allowed rank error.
+var summaryObjectives = map[float64]float64{
+	0.5:  0.05,
+	0.9:  0.01,
+	0.99: 0.001,
+}
+
+// Opts is used to configure the Prometheus Sink.
 type Opts struct {
 	// Expiration is the duration a metric is valid for, after which it will be
 	// untracked. If the value is zero, a metric is never expired.
+	// Counters are never expired, regardless of this setting.
 	Expiration time.Duration
+
+	// Registerer the Sink registers itself with.
+	// Defaults to prometheus.DefaultRegisterer.
 	Registerer prometheus.Registerer
 
-	// Gauges, Summaries, and Counters allow us to pre-declare metrics by giving
-	// their Name, Help, and ConstLabels to the Sink when it is created.
+	// GaugeDefinitions pre-declares gauges by Name, Help and ConstTags.
 	// Metrics declared in this way will be initialized at zero and will not be
 	// deleted or altered when their expiry is reached.
 	//
-	// Ex: PrometheusOpts{
+	// Ex: Opts{
 	//     Expiration: 10 * time.Second,
-	//     Gauges: []GaugeDefinition{
+	//     GaugeDefinitions: []GaugeDefinition{
 	//         {
-	//           Name: "application_component_measurement"},
+	//           Name: "application_component_measurement",
 	//           Help: "application_component_measurement provides an example of how to declare static metrics",
-	//           ConstLabels: []metrics.Label{ { Name: "my_label", Value: "does_not_change" }, },
+	//           ConstTags: []metrics.Tag{ { Name: "my_label", Value: "does_not_change" } },
 	//         },
 	//     },
 	// }
-	GaugeDefinitions   []GaugeDefinition
+	GaugeDefinitions []GaugeDefinition
+	// SummaryDefinitions pre-declares summaries, see GaugeDefinitions.
 	SummaryDefinitions []SummaryDefinition
+	// CounterDefinitions pre-declares counters, see GaugeDefinitions.
 	CounterDefinitions []CounterDefinition
-	Name               string
 
-	// Help of the metrics
+	// Name of the sink, used as the descriptor exposed by Describe.
+	// Two sinks registered with the same Registerer must have different names.
+	Name string
+
+	// Help of the metrics, keyed by the final metric name.
+	// Use metrics.Config.Help to build it from the metric descriptions, so the
+	// exported HELP text matches the name the configuration produces.
+	// The map is retained and written to by the pre-declared definitions.
 	Help map[string]string
 }
 
-// Sink provides a MetricSink that can be used
+// Sink provides a metrics.Sink that can be used
 // with a prometheus server.
+//
+// It implements prometheus.Collector: it is registered on construction and
+// scraped through a prometheus registry. Series are created on first use and,
+// unless pre-declared, expired after Opts.Expiration without an update.
 type Sink struct {
 	// If these will ever be copied, they should be converted to *sync.Map values and initialized appropriately
 	gauges     sync.Map
@@ -72,7 +98,7 @@ type Sink struct {
 	name       string
 }
 
-// GaugeDefinition can be provided to PrometheusOpts to declare a constant gauge that is not deleted on expiry.
+// GaugeDefinition can be provided to Opts to declare a constant gauge that is not deleted on expiry.
 type GaugeDefinition struct {
 	Name      string
 	ConstTags []metrics.Tag
@@ -86,7 +112,7 @@ type gauge struct {
 	canDelete bool
 }
 
-// SummaryDefinition can be provided to PrometheusOpts to declare a constant summary that is not deleted on expiry.
+// SummaryDefinition can be provided to Opts to declare a constant summary that is not deleted on expiry.
 type SummaryDefinition struct {
 	Name      string
 	ConstTags []metrics.Tag
@@ -99,7 +125,7 @@ type summary struct {
 	canDelete bool
 }
 
-// CounterDefinition can be provided to PrometheusOpts to declare a constant counter that is not deleted on expiry.
+// CounterDefinition can be provided to Opts to declare a constant counter that is not deleted on expiry.
 type CounterDefinition struct {
 	Name      string
 	ConstTags []metrics.Tag
@@ -109,19 +135,22 @@ type CounterDefinition struct {
 type counter struct {
 	prometheus.Counter
 	updatedAt time.Time
-	//canDelete bool
 }
 
-// NewSink creates a new Sink using the default options.
+// NewSink creates a new Sink using DefaultPrometheusOpts.
 func NewSink() (*Sink, error) {
 	return NewSinkFrom(DefaultPrometheusOpts)
 }
 
-// NewSinkFrom creates a new Sink using the passed options.
+// NewSinkFrom creates a new Sink using the passed options and registers it
+// with opts.Registerer, or with prometheus.DefaultRegisterer when unset.
+//
+// It returns an error when a collector with the same name is already
+// registered with that registerer.
 func NewSinkFrom(opts Opts) (*Sink, error) {
 	name := opts.Name
 	if name == "" {
-		name = "default_prometheus_sink"
+		name = defaultSinkName
 	}
 	sink := &Sink{
 		gauges:     sync.Map{},
@@ -207,17 +236,8 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 			return true
 		}
 		count := v.(*counter)
-		// DO NOT DELETE COUNTERS
-		/*
-			lastUpdate := count.updatedAt
-			if expire && lastUpdate.Add(p.expiration).Before(t) {
-				if count.canDelete {
-					p.counters.Delete(k)
-					deleted = append(deleted, k.(string))
-					return true
-				}
-			}
-		*/
+		// Counters are never deleted: removing one would reset the series and
+		// break rate() over the scrape gap.
 		count.Collect(c)
 		return true
 	})
@@ -226,6 +246,7 @@ func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
 	}
 }
 
+// initGauges pre-declares the gauges and records their help text.
 func initGauges(m *sync.Map, gauges []GaugeDefinition, help map[string]string) {
 	for _, g := range gauges {
 		key, hash := flattenKey(g.Name, g.ConstTags)
@@ -239,6 +260,7 @@ func initGauges(m *sync.Map, gauges []GaugeDefinition, help map[string]string) {
 	}
 }
 
+// initSummaries pre-declares the summaries and records their help text.
 func initSummaries(m *sync.Map, summaries []SummaryDefinition, help map[string]string) {
 	for _, s := range summaries {
 		key, hash := flattenKey(s.Name, s.ConstTags)
@@ -248,12 +270,13 @@ func initSummaries(m *sync.Map, summaries []SummaryDefinition, help map[string]s
 			Help:        s.Help,
 			MaxAge:      ObservationMaxAge,
 			ConstLabels: prometheusLabels(s.ConstTags),
-			Objectives:  map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
+			Objectives:  summaryObjectives,
 		})
 		m.Store(hash, &summary{Summary: pS})
 	}
 }
 
+// initCounters pre-declares the counters and records their help text.
 func initCounters(m *sync.Map, counters []CounterDefinition, help map[string]string) {
 	for _, c := range counters {
 		key, hash := flattenKey(c.Name, c.ConstTags)
@@ -267,28 +290,54 @@ func initCounters(m *sync.Map, counters []CounterDefinition, help map[string]str
 	}
 }
 
+// forbiddenCharsReplacer maps the characters that are not valid in a
+// Prometheus metric name onto underscores.
 var forbiddenCharsReplacer = strings.NewReplacer(" ", "_", ".", "_", "=", "_", "-", "_", "/", "_")
 
+// labelKeySizeHint is the assumed size of one ";name=value" pair,
+// used to pre-size the hash buffer.
+const labelKeySizeHint = 24
+
+// flattenKey returns the sanitized metric name and the hash that identifies the
+// series: the name with its labels appended. Label names are not sanitized.
 func flattenKey(parts string, labels []metrics.Tag) (string, string) {
 	key := forbiddenCharsReplacer.Replace(parts)
-
-	hash := key
-	for _, label := range labels {
-		hash += ";" + label.Name + "=" + label.Value
+	if len(labels) == 0 {
+		return key, key
 	}
 
-	return key, hash
+	buf := new(strings.Builder)
+	buf.Grow(len(key) + len(labels)*labelKeySizeHint)
+	buf.WriteString(key)
+	for _, label := range labels {
+		buf.WriteByte(';')
+		buf.WriteString(label.Name)
+		buf.WriteByte('=')
+		buf.WriteString(label.Value)
+	}
+
+	return key, buf.String()
 }
 
+// prometheusLabels converts the tags into the const labels of a metric.
 func prometheusLabels(labels []metrics.Tag) prometheus.Labels {
-	l := make(prometheus.Labels)
+	l := make(prometheus.Labels, len(labels))
 	for _, label := range labels {
 		l[label.Name] = label.Value
 	}
 	return l
 }
 
-// SetGauge should retain the last value it is set to
+// helpFor returns the configured help text of the metric, or the key itself.
+func (p *Sink) helpFor(key string) string {
+	if h, ok := p.help[key]; ok {
+		return h
+	}
+	return key
+}
+
+// SetGauge retains the last value it is set to.
+// The gauge is created on first use and expires after Opts.Expiration.
 func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	pg, ok := p.gauges.Load(hash)
@@ -307,14 +356,9 @@ func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 
 		// The gauge does not exist, create the gauge and allow it to be deleted
 	} else {
-		help := key
-		existingHelp, ok := p.help[key]
-		if ok {
-			help = existingHelp
-		}
 		g := prometheus.NewGauge(prometheus.GaugeOpts{
 			Name:        key,
-			Help:        help,
+			Help:        p.helpFor(key),
 			ConstLabels: prometheusLabels(labels),
 		})
 		g.Set(val)
@@ -327,7 +371,9 @@ func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 	}
 }
 
-// AddSample is for timing information, where quantiles are used
+// AddSample records an observation in a summary,
+// exported as the configured quantiles plus _sum and _count.
+// The summary is created on first use and expires after Opts.Expiration.
 func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	ps, ok := p.summaries.Load(hash)
@@ -341,17 +387,12 @@ func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 
 		// The summary does not exist, create the Summary and allow it to be deleted
 	} else {
-		help := key
-		existingHelp, ok := p.help[key]
-		if ok {
-			help = existingHelp
-		}
 		s := prometheus.NewSummary(prometheus.SummaryOpts{
 			Name:        key,
-			Help:        help,
+			Help:        p.helpFor(key),
 			MaxAge:      ObservationMaxAge,
 			ConstLabels: prometheusLabels(labels),
-			Objectives:  map[float64]float64{0.5: 0.05, 0.9: 0.01, 0.99: 0.001},
+			Objectives:  summaryObjectives,
 		})
 		s.Observe(val)
 		ps = &summary{
@@ -366,10 +407,10 @@ func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 // EmitKey is not implemented. Prometheus doesn’t offer a type for which an
 // arbitrary number of values is retained, as Prometheus works with a pull
 // model, rather than a push model.
-// func (p *Sink) EmitKey(key string, val float64, labels []metrics.Tag) {
-// }
 
-// IncrCounter should accumulate values
+// IncrCounter accumulates values.
+// The counter is created on first use and is never expired, so every tag
+// combination emitted is retained for the lifetime of the process.
 func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
 	pc, ok := p.counters.Load(hash)
@@ -377,27 +418,21 @@ func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 	// Does the counter exist?
 	if ok {
 		localCounter := *pc.(*counter)
-		localCounter.Add(float64(val))
+		localCounter.Add(val)
 		localCounter.updatedAt = time.Now()
 		p.counters.Store(hash, &localCounter)
 
-		// The counter does not exist yet, create it and allow it to be deleted
+		// The counter does not exist yet, create it
 	} else {
-		help := key
-		existingHelp, ok := p.help[key]
-		if ok {
-			help = existingHelp
-		}
 		c := prometheus.NewCounter(prometheus.CounterOpts{
 			Name:        key,
-			Help:        help,
+			Help:        p.helpFor(key),
 			ConstLabels: prometheusLabels(labels),
 		})
-		c.Add(float64(val))
+		c.Add(val)
 		pc = &counter{
 			Counter:   c,
 			updatedAt: time.Now(),
-			//canDelete: true,
 		}
 		p.counters.Store(hash, pc)
 	}
@@ -405,6 +440,9 @@ func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 
 // PushSink wraps a normal prometheus sink and provides an address and facilities to export it to an address
 // on an interval.
+//
+// Use it for processes that Prometheus cannot scrape, such as batch jobs, by
+// pushing to a Pushgateway.
 type PushSink struct {
 	*Sink
 	pusher       *push.Pusher
@@ -413,14 +451,20 @@ type PushSink struct {
 	stopChan     chan struct{}
 }
 
-// NewPushSink creates a PrometheusPushSink by taking an address, interval, and destination name.
+// NewPushSink creates a PushSink by taking an address, interval, and destination name,
+// and starts the background push loop.
+//
+// The wrapped Sink is not registered with any prometheus.Registerer and uses a
+// fixed 60s expiration, so the options of NewSinkFrom do not apply. Call
+// Shutdown to stop pushing. The error is always nil and exists for API
+// compatibility. pushInterval must be greater than zero.
 func NewPushSink(address string, pushInterval time.Duration, name string) (*PushSink, error) {
 	promSink := &Sink{
 		gauges:     sync.Map{},
 		summaries:  sync.Map{},
 		counters:   sync.Map{},
 		expiration: 60 * time.Second,
-		name:       "default_prometheus_sink",
+		name:       defaultSinkName,
 	}
 
 	pusher := push.New(address, name).Collector(promSink)
@@ -437,6 +481,7 @@ func NewPushSink(address string, pushInterval time.Duration, name string) (*Push
 	return sink, nil
 }
 
+// flushMetrics starts the goroutine that pushes on the configured interval.
 func (s *PushSink) flushMetrics() {
 	ticker := time.NewTicker(s.pushInterval)
 
@@ -446,7 +491,7 @@ func (s *PushSink) flushMetrics() {
 			case <-ticker.C:
 				err := s.pusher.Push()
 				if err != nil {
-					log.Printf("[ERR] Error pushing to Prometheus! Err: %s", err)
+					logger.KV(xlog.ERROR, "reason", "push", "address", s.address, "err", err.Error())
 				}
 			case <-s.stopChan:
 				ticker.Stop()
@@ -456,7 +501,8 @@ func (s *PushSink) flushMetrics() {
 	}()
 }
 
-// Shutdown tears down the PrometheusPushSink, and blocks while flushing metrics to the backend.
+// Shutdown tears down the PushSink, and blocks while flushing metrics to the backend.
+// It must be called at most once.
 func (s *PushSink) Shutdown() {
 	close(s.stopChan)
 	// Closing the channel only stops the running goroutine that pushes metrics.

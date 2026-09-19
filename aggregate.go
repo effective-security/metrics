@@ -7,7 +7,10 @@ import (
 )
 
 // AggregateSample is used to hold aggregate metrics
-// about a sample
+// about a sample.
+//
+// It is not safe for concurrent use: callers must serialize Ingest against
+// readers, which InmemSink does with the interval lock.
 type AggregateSample struct {
 	Count       int       // The count of emitted pairs
 	Rate        float64   // The values rate per time unit (usually 1 second)
@@ -18,9 +21,13 @@ type AggregateSample struct {
 	LastUpdated time.Time `json:"-"` // When value was last updated
 }
 
-// Stddev computes a Stddev of the values
+// Stddev computes the standard deviation of the ingested values.
+// It returns 0 for fewer than two values.
+//
+// The result is derived from the running sums, which loses precision when the
+// values are large relative to their spread.
 func (a *AggregateSample) Stddev() float64 {
-	num := (float64(a.Count) * a.SumSq) - math.Pow(a.Sum, 2) //nolint:staticcheck // this is a math operation
+	num := (float64(a.Count) * a.SumSq) - (a.Sum * a.Sum)
 	div := float64(a.Count * (a.Count - 1))
 	if div == 0 {
 		return 0
@@ -28,7 +35,7 @@ func (a *AggregateSample) Stddev() float64 {
 	return math.Sqrt(num / div)
 }
 
-// Mean computes a mean of the values
+// Mean computes the mean of the ingested values, or 0 when there are none.
 func (a *AggregateSample) Mean() float64 {
 	if a.Count == 0 {
 		return 0
@@ -36,7 +43,9 @@ func (a *AggregateSample) Mean() float64 {
 	return a.Sum / float64(a.Count)
 }
 
-// Ingest is used to update a sample
+// Ingest is used to update a sample with a new value.
+// rateDenom is the length of the aggregation interval in the rate time unit,
+// and must not be zero.
 func (a *AggregateSample) Ingest(v float64, rateDenom float64) {
 	a.Count++
 	a.Sum += v
@@ -47,10 +56,12 @@ func (a *AggregateSample) Ingest(v float64, rateDenom float64) {
 	if v > a.Max || a.Count == 1 {
 		a.Max = v
 	}
-	a.Rate = float64(a.Sum) / rateDenom
+	a.Rate = a.Sum / rateDenom
 	a.LastUpdated = time.Now()
 }
 
+// String returns a human readable summary of the sample,
+// used by InmemSignal when dumping metrics.
 func (a *AggregateSample) String() string {
 	if a.Count == 0 {
 		return "Count: 0"

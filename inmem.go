@@ -1,8 +1,7 @@
 package metrics
 
 import (
-	"bytes"
-	"fmt"
+	"maps"
 	"net/url"
 	"strings"
 	"sync"
@@ -11,9 +10,14 @@ import (
 	"github.com/cockroachdb/errors"
 )
 
-// InmemSink provides a MetricSink that does in-memory aggregation
+// InmemSink provides a Sink that does in-memory aggregation
 // without sending metrics over a network. It can be embedded within
 // an application to provide profiling information.
+//
+// Values are bucketed into fixed aggregation intervals and the oldest buckets
+// are discarded, so memory is bounded by retain/interval times the number of
+// distinct key and tag combinations. Read the aggregated data with Data or
+// DisplayMetrics, or dump it on a signal with InmemSignal.
 type InmemSink struct {
 	// How long is each aggregation interval
 	interval time.Duration
@@ -33,7 +37,9 @@ type InmemSink struct {
 }
 
 // IntervalMetrics stores the aggregated metrics
-// for a specific interval
+// for a specific interval.
+//
+// The embedded RWMutex guards the maps; hold it while reading them.
 type IntervalMetrics struct {
 	sync.RWMutex
 
@@ -42,10 +48,6 @@ type IntervalMetrics struct {
 
 	// Gauges maps the key to the last set value
 	Gauges map[string]GaugeValue
-
-	// Points maps the string to the list of emitted values
-	// from EmitKey
-	//Points map[string][]float32
 
 	// Counters maps the string key to a sum of the counter
 	// values
@@ -56,19 +58,23 @@ type IntervalMetrics struct {
 	Samples map[string]SampledValue
 }
 
-// NewIntervalMetrics creates a new IntervalMetrics for a given interval
+// NewIntervalMetrics creates a new IntervalMetrics for a given interval.
 func NewIntervalMetrics(intv time.Time) *IntervalMetrics {
 	return &IntervalMetrics{
 		Interval: intv,
 		Gauges:   make(map[string]GaugeValue),
-		//Points:   make(map[string][]float32),
 		Counters: make(map[string]SampledValue),
 		Samples:  make(map[string]SampledValue),
 	}
 }
 
 // NewInmemSinkFromURL creates an InmemSink from a URL. It is used
-// (and tested) from NewMetricSinkFromURL.
+// (and tested) from factory.NewMetricSinkFromURL.
+//
+// The "interval" and "retain" query parameters are required and must parse as
+// durations, for example:
+//
+//	inmem://localhost?interval=10s&retain=1m
 func NewInmemSinkFromURL(u *url.URL) (Sink, error) {
 	params := u.Query()
 
@@ -85,8 +91,12 @@ func NewInmemSinkFromURL(u *url.URL) (Sink, error) {
 	return NewInmemSink(interval, retain), nil
 }
 
-// NewInmemSink is used to construct a new in-memory sink.
-// Uses an aggregation interval and maximum retention period.
+// NewInmemSink is used to construct a new in-memory sink,
+// with an aggregation interval and a maximum retention period.
+//
+// interval must be greater than zero, and retain must be at least twice the
+// interval: a shorter retention leaves no finished interval to report.
+// See FINDINGS.md #3 and #4 for what currently happens otherwise.
 func NewInmemSink(interval, retain time.Duration) *InmemSink {
 	rateTimeUnit := time.Second
 	i := &InmemSink{
@@ -99,7 +109,7 @@ func NewInmemSink(interval, retain time.Duration) *InmemSink {
 	return i
 }
 
-// SetGauge should retain the last value it is set to
+// SetGauge retains the last value it is set to, within the current interval.
 func (i *InmemSink) SetGauge(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
@@ -109,7 +119,7 @@ func (i *InmemSink) SetGauge(key string, val float64, tags []Tag) {
 	intv.Gauges[k] = GaugeValue{Name: name, Value: val, Labels: tags}
 }
 
-// IncrCounter should accumulate values
+// IncrCounter accumulates values within the current interval.
 func (i *InmemSink) IncrCounter(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
@@ -126,10 +136,11 @@ func (i *InmemSink) IncrCounter(key string, val float64, tags []Tag) {
 		}
 		intv.Counters[k] = agg
 	}
-	agg.Ingest(float64(val), i.rateDenom)
+	agg.Ingest(val, i.rateDenom)
 }
 
-// AddSample is for timing information, where quantiles are used
+// AddSample records an observation within the current interval,
+// rolled up into an AggregateSample.
 func (i *InmemSink) AddSample(key string, val float64, tags []Tag) {
 	k, name := i.flattenKeyLabels(key, tags)
 	intv := i.getInterval()
@@ -146,11 +157,16 @@ func (i *InmemSink) AddSample(key string, val float64, tags []Tag) {
 		}
 		intv.Samples[k] = agg
 	}
-	agg.Ingest(float64(val), i.rateDenom)
+	agg.Ingest(val, i.rateDenom)
 }
 
-// Data is used to retrieve all the aggregated metrics
-// Intervals may be in use, and a read lock should be acquired
+// Data is used to retrieve all the aggregated metrics, oldest interval first.
+// The last entry is the interval currently being written to.
+//
+// Finished intervals are returned by reference and must be read under their own
+// RLock. The current interval is returned as a fresh IntervalMetrics with copied
+// maps, but the AggregateSample values inside are shared with the live interval,
+// so a concurrent emission still races with reading them. See FINDINGS.md #2.
 func (i *InmemSink) Data() []*IntervalMetrics {
 	// Get the current interval, forces creation
 	i.getInterval()
@@ -171,29 +187,18 @@ func (i *InmemSink) Data() []*IntervalMetrics {
 	copyCurrent.Interval = current.Interval
 
 	copyCurrent.Gauges = make(map[string]GaugeValue, len(current.Gauges))
-	for k, v := range current.Gauges {
-		copyCurrent.Gauges[k] = v
-	}
-	// saved values will be not change, just copy its link
-	/*
-		copyCurrent.Points = make(map[string][]float32, len(current.Points))
-		for k, v := range current.Points {
-			copyCurrent.Points[k] = v
-		}
-	*/
+	maps.Copy(copyCurrent.Gauges, current.Gauges)
+	// saved values will not change, just copy the link
 	copyCurrent.Counters = make(map[string]SampledValue, len(current.Counters))
-	for k, v := range current.Counters {
-		copyCurrent.Counters[k] = v
-	}
+	maps.Copy(copyCurrent.Counters, current.Counters)
 	copyCurrent.Samples = make(map[string]SampledValue, len(current.Samples))
-	for k, v := range current.Samples {
-		copyCurrent.Samples[k] = v
-	}
+	maps.Copy(copyCurrent.Samples, current.Samples)
 	current.RUnlock()
 
 	return intervals
 }
 
+// getExistingInterval returns the interval for intv if it is the current one.
 func (i *InmemSink) getExistingInterval(intv time.Time) *IntervalMetrics {
 	i.intervalLock.RLock()
 	defer i.intervalLock.RUnlock()
@@ -205,6 +210,8 @@ func (i *InmemSink) getExistingInterval(intv time.Time) *IntervalMetrics {
 	return nil
 }
 
+// createInterval appends the interval for intv, unless a racing caller already
+// did, and drops the intervals that fell out of the retention window.
 func (i *InmemSink) createInterval(intv time.Time) *IntervalMetrics {
 	i.intervalLock.Lock()
 	defer i.intervalLock.Unlock()
@@ -228,7 +235,7 @@ func (i *InmemSink) createInterval(intv time.Time) *IntervalMetrics {
 	return current
 }
 
-// getInterval returns the current interval to write to
+// getInterval returns the current interval to write to, creating it if needed.
 func (i *InmemSink) getInterval() *IntervalMetrics {
 	intv := time.Now().Truncate(i.interval)
 	if m := i.getExistingInterval(intv); m != nil {
@@ -237,15 +244,30 @@ func (i *InmemSink) getInterval() *IntervalMetrics {
 	return i.createInterval(intv)
 }
 
-// Flattens the key for formatting along with its tags, removes spaces
+// keyReplacer normalizes keys and tags for the flattened aggregation key.
+var keyReplacer = strings.NewReplacer(" ", "_")
+
+// labelKeySizeHint is the assumed size of one ";name=value" pair,
+// used to pre-size the flattened key buffer.
+const labelKeySizeHint = 24
+
+// flattenKeyLabels flattens the key for formatting along with its tags and
+// removes spaces. It returns the aggregation key, which includes the tags, and
+// the plain metric name.
 func (i *InmemSink) flattenKeyLabels(key string, tags []Tag) (string, string) {
-	buf := &bytes.Buffer{}
-	replacer := strings.NewReplacer(" ", "_")
+	if len(tags) == 0 {
+		return keyReplacer.Replace(key), key
+	}
 
-	_, _ = replacer.WriteString(buf, key)
+	buf := new(strings.Builder)
+	buf.Grow(len(key) + len(tags)*labelKeySizeHint)
 
+	_, _ = keyReplacer.WriteString(buf, key)
 	for _, label := range tags {
-		_, _ = replacer.WriteString(buf, fmt.Sprintf(";%s=%s", label.Name, label.Value))
+		buf.WriteByte(';')
+		_, _ = keyReplacer.WriteString(buf, label.Name)
+		buf.WriteByte('=')
+		_, _ = keyReplacer.WriteString(buf, label.Value)
 	}
 
 	return buf.String(), key

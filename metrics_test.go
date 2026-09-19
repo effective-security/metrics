@@ -16,7 +16,7 @@ import (
 )
 
 func run(p metrics.Provider, times int) {
-	for i := 0; i < times; i++ {
+	for i := range times {
 		p.SetGauge("test_metrics_gauge", float64(i), metrics.Tag{"org_gauge", "676220136511767142"})
 		p.IncrCounter("test_metrics_counter", float64(i), metrics.Tag{"org_counter", "676220136511767142"})
 		p.AddSample("test_metrics_sample", float64(i), metrics.Tag{"org_sample", "676220136511767142"})
