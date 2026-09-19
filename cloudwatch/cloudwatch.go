@@ -3,6 +3,7 @@ package cloudwatch
 import (
 	"context"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -29,7 +30,9 @@ const (
 	// accepted by a single PutMetricData call.
 	maxMetricsPerRequest = 1000
 	// maxDimensions is the number of dimensions AWS accepts per metric.
-	maxDimensions = 10
+	maxDimensions = 30
+	// shutdownFlushTimeout bounds the final flush after the context ends.
+	shutdownFlushTimeout = 10 * time.Second
 	// labelKeySizeHint is the assumed size of one ";name=value" pair,
 	// used to pre-size the hash buffer.
 	labelKeySizeHint = 24
@@ -96,7 +99,8 @@ type Sink struct {
 // NewSink initializes and returns a pointer to a CloudWatch Sink using the
 // supplied configuration, or an error if there is a problem with the configuration.
 //
-// It only builds the client; call Run to start publishing.
+// PublishInterval and MetricsExpiry fall back to their defaults when they are
+// not positive. It only builds the client; call Run to start publishing.
 func NewSink(c *Config) (*Sink, error) {
 	sink := &Sink{
 		gauges:                    make(map[string]*types.MetricDatum),
@@ -110,10 +114,13 @@ func NewSink(c *Config) (*Sink, error) {
 		withCleanup:               c.WithCleanup,
 	}
 
-	if sink.cloudWatchPublishInterval == 0 {
+	// a non-positive duration is a misconfiguration, not a request to publish
+	// continuously: PublishInterval reaches time.NewTicker, which panics on
+	// one, and a negative expiry would drop every datum on the next flush
+	if sink.cloudWatchPublishInterval <= 0 {
 		sink.cloudWatchPublishInterval = defaultPublishInterval
 	}
-	if sink.expiration == 0 {
+	if sink.expiration <= 0 {
 		sink.expiration = defaultMetricsExpiry
 	}
 
@@ -139,7 +146,12 @@ func (p *Sink) Run(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			logger.KV(xlog.DEBUG, "reason", "stopping")
-			err := p.Flush(ctx)
+			// ctx is already done, so publishing with it would fail before the
+			// request is sent; keep its values and give the last flush its own
+			// deadline
+			flushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), shutdownFlushTimeout)
+			err := p.Flush(flushCtx)
+			cancel()
 			if err != nil {
 				logger.KV(xlog.ERROR, "reason", "Flush", "err", err)
 			}
@@ -209,8 +221,31 @@ func (p *Sink) flattenKey(key string, labels []metrics.Tag) (string, string) {
 	return key, buf.String()
 }
 
+// limitTags drops the tags beyond what CloudWatch accepts as dimensions, and
+// reports which ones. It runs before the aggregation key is built, so that two
+// emissions differing only in a dropped tag aggregate into the one datum they
+// are published as, instead of fighting over the same series from two map
+// entries.
+//
+// Losing a dimension is better than failing the whole batch, and far better
+// than panicking in the goroutine that happened to emit.
+func limitTags(key string, labels []metrics.Tag) []metrics.Tag {
+	if len(labels) <= maxDimensions {
+		return labels
+	}
+
+	logger.KV(xlog.ERROR,
+		"reason", "too_many_dimensions",
+		"metric", key,
+		"allowed", maxDimensions,
+		"provided", len(labels),
+		"dropped", tagNames(labels[maxDimensions:]),
+	)
+	return labels[:maxDimensions]
+}
+
 // dimensions converts the tags into CloudWatch dimensions.
-// It panics when there are more than maxDimensions tags, see FINDINGS.md #8.
+// The tags must already have been limited by limitTags.
 func dimensions(labels []metrics.Tag) []types.Dimension {
 	ds := make([]types.Dimension, len(labels))
 	for idx, v := range labels {
@@ -220,10 +255,16 @@ func dimensions(labels []metrics.Tag) []types.Dimension {
 		}
 	}
 
-	if len(ds) > maxDimensions {
-		logger.Panicf("AWS does not support more than %d dimensions: %v", maxDimensions, ds)
-	}
 	return ds
+}
+
+// tagNames lists the tag names, for the error reporting the dropped ones.
+func tagNames(labels []metrics.Tag) []string {
+	names := make([]string, len(labels))
+	for idx, v := range labels {
+		names[idx] = v.Name
+	}
+	return names
 }
 
 const (
@@ -233,6 +274,8 @@ const (
 
 // SetGauge retains the last value it is set to, until it is published.
 func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
+	tags = limitTags(key, tags)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -242,7 +285,7 @@ func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 	if !ok {
 		g = &types.MetricDatum{
 			Unit:              types.StandardUnitCount,
-			MetricName:        &key,
+			MetricName:        aws.String(key),
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
 			Value:             aws.Float64(val),
@@ -250,23 +293,29 @@ func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 		}
 		p.gauges[hash] = g
 	} else {
-		g.Value = aws.Float64(val)
+		*g.Value = val
 		g.Timestamp = aws.Time(now)
 	}
 }
 
 // AddSample records an observation into the statistic set (min, max, sum,
-// count) published for the metric. CloudWatch derives the quantiles it offers
-// from that set, so individual values are not retained.
+// count) published for the metric.
+//
+// Individual values are not retained, so CloudWatch reports Minimum, Maximum,
+// Sum, SampleCount and Average for the metric, but cannot compute percentiles
+// from it. Set Config.WithSampleCount to publish the count, sum and average as
+// metrics of their own.
 func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
+	tags = limitTags(key, tags)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	valPtr := aws.Float64(val)
 	key, hash := p.flattenKey(key, tags)
 	p.updates[hash] = now
 	g, ok := p.samples[hash]
 	if !ok {
+		// one pointer per statistic: they are updated independently below
 		g = &types.MetricDatum{
 			Unit:              types.StandardUnitCount,
 			MetricName:        aws.String(key),
@@ -274,28 +323,31 @@ func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
 			Dimensions:        dimensions(tags),
 			StorageResolution: aws.Int32(storageResolutionVal),
 			StatisticValues: &types.StatisticSet{
-				Minimum:     valPtr,
-				Maximum:     valPtr,
-				Sum:         valPtr,
+				Minimum:     aws.Float64(val),
+				Maximum:     aws.Float64(val),
+				Sum:         aws.Float64(val),
 				SampleCount: aws.Float64(oneVal),
 			},
 		}
 		p.samples[hash] = g
 	} else {
-		if val < *g.StatisticValues.Minimum {
-			g.StatisticValues.Minimum = valPtr
+		stats := g.StatisticValues
+		if val < *stats.Minimum {
+			*stats.Minimum = val
 		}
-		if val > *g.StatisticValues.Maximum {
-			g.StatisticValues.Maximum = valPtr
+		if val > *stats.Maximum {
+			*stats.Maximum = val
 		}
-		g.StatisticValues.SampleCount = aws.Float64(*g.StatisticValues.SampleCount + 1)
-		g.StatisticValues.Sum = aws.Float64(*g.StatisticValues.Sum + val)
+		*stats.SampleCount++
+		*stats.Sum += val
 		g.Timestamp = aws.Time(now)
 	}
 }
 
 // IncrCounter accumulates values until they are published.
 func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
+	tags = limitTags(key, tags)
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
@@ -313,7 +365,7 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 		}
 		p.counters[hash] = g
 	} else {
-		g.Value = aws.Float64(*g.Value + val)
+		*g.Value += val
 		g.Timestamp = aws.Time(now)
 	}
 }
@@ -324,15 +376,16 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 //
 // When Config.WithSampleCount is set, each sample also yields _count, _sum and
 // _avg metrics. When Config.WithCleanup is set, the returned data is removed
-// from the sink. The returned data shares the statistic sets with the sink,
-// so concurrent emissions can still change it; see FINDINGS.md #6.
+// from the sink. The returned data is a deep copy: it shares nothing with the
+// sink, so it stays stable while Publish serializes it and other goroutines
+// keep emitting, and a caller may modify it freely.
 func (p *Sink) Data() []types.MetricDatum {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	data := make([]types.MetricDatum, 0, len(p.counters)+len(p.gauges)+len(p.samples))
 
-	expire := p.expiration != 0
+	expire := p.expiration > 0
 	now := time.Now()
 	for k, v := range p.gauges {
 		last := p.updates[k]
@@ -340,7 +393,7 @@ func (p *Sink) Data() []types.MetricDatum {
 			delete(p.updates, k)
 			delete(p.gauges, k)
 		} else {
-			data = append(data, *v)
+			data = append(data, cloneDatum(v))
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.gauges, k)
@@ -353,36 +406,21 @@ func (p *Sink) Data() []types.MetricDatum {
 			delete(p.updates, k)
 			delete(p.samples, k)
 		} else {
-			data = append(data, *v)
+			// derive the extra metrics from the snapshot, not from the live
+			// datum, so all four report the same statistic set
+			datum := cloneDatum(v)
+			data = append(data, datum)
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.samples, k)
 			}
-			if p.withSampleCount {
-				data = append(data, types.MetricDatum{
-					Unit:              v.Unit,
-					MetricName:        aws.String(*v.MetricName + "_count"),
-					Timestamp:         v.Timestamp,
-					Dimensions:        v.Dimensions,
-					StorageResolution: v.StorageResolution,
-					Value:             v.StatisticValues.SampleCount,
-				})
-				data = append(data, types.MetricDatum{
-					Unit:              v.Unit,
-					MetricName:        aws.String(*v.MetricName + "_sum"),
-					Timestamp:         v.Timestamp,
-					Dimensions:        v.Dimensions,
-					StorageResolution: v.StorageResolution,
-					Value:             v.StatisticValues.Sum,
-				})
-				data = append(data, types.MetricDatum{
-					Unit:              v.Unit,
-					MetricName:        aws.String(*v.MetricName + "_avg"),
-					Timestamp:         v.Timestamp,
-					Dimensions:        v.Dimensions,
-					StorageResolution: v.StorageResolution,
-					Value:             aws.Float64(*v.StatisticValues.Sum / *v.StatisticValues.SampleCount),
-				})
+			if p.withSampleCount && datum.StatisticValues != nil {
+				stats := datum.StatisticValues
+				data = append(data,
+					derivedDatum(&datum, sampleCountSuffix, *stats.SampleCount),
+					derivedDatum(&datum, sampleSumSuffix, *stats.Sum),
+					derivedDatum(&datum, sampleAvgSuffix, *stats.Sum / *stats.SampleCount),
+				)
 			}
 		}
 	}
@@ -392,7 +430,7 @@ func (p *Sink) Data() []types.MetricDatum {
 			delete(p.updates, k)
 			delete(p.counters, k)
 		} else {
-			data = append(data, *v)
+			data = append(data, cloneDatum(v))
 			if p.withCleanup {
 				delete(p.updates, k)
 				delete(p.counters, k)
@@ -400,6 +438,70 @@ func (p *Sink) Data() []types.MetricDatum {
 		}
 	}
 	return data
+}
+
+// Suffixes of the metrics derived from a sample when Config.WithSampleCount
+// is set.
+const (
+	sampleCountSuffix = "_count"
+	sampleSumSuffix   = "_sum"
+	sampleAvgSuffix   = "_avg"
+)
+
+// derivedDatum builds one of the WithSampleCount metrics from a sample datum
+// that is already a private copy. The result is a private copy too, so a caller
+// editing one datum of the returned batch does not edit its siblings.
+func derivedDatum(sample *types.MetricDatum, suffix string, value float64) types.MetricDatum {
+	datum := cloneDatum(sample)
+	datum.MetricName = aws.String(*sample.MetricName + suffix)
+	datum.StatisticValues = nil
+	datum.Value = aws.Float64(value)
+	return datum
+}
+
+// cloneDatum returns a copy of the datum that shares nothing with the sink:
+// every pointer field is duplicated, so neither a later emission nor a caller
+// writing through the returned data can change what the other sees.
+func cloneDatum(v *types.MetricDatum) types.MetricDatum {
+	datum := types.MetricDatum{
+		Unit:              v.Unit,
+		MetricName:        clonePtr(v.MetricName),
+		Value:             clonePtr(v.Value),
+		Timestamp:         clonePtr(v.Timestamp),
+		StorageResolution: clonePtr(v.StorageResolution),
+		Values:            slices.Clone(v.Values),
+		Counts:            slices.Clone(v.Counts),
+	}
+
+	if v.StatisticValues != nil {
+		datum.StatisticValues = &types.StatisticSet{
+			Minimum:     clonePtr(v.StatisticValues.Minimum),
+			Maximum:     clonePtr(v.StatisticValues.Maximum),
+			Sum:         clonePtr(v.StatisticValues.Sum),
+			SampleCount: clonePtr(v.StatisticValues.SampleCount),
+		}
+	}
+
+	if len(v.Dimensions) > 0 {
+		datum.Dimensions = make([]types.Dimension, len(v.Dimensions))
+		for idx, d := range v.Dimensions {
+			datum.Dimensions[idx] = types.Dimension{
+				Name:  clonePtr(d.Name),
+				Value: clonePtr(d.Value),
+			}
+		}
+	}
+
+	return datum
+}
+
+// clonePtr duplicates the pointed-to value, keeping a nil pointer nil.
+func clonePtr[T any](p *T) *T {
+	if p == nil {
+		return nil
+	}
+	v := *p
+	return &v
 }
 
 // Publish sends one batch of metric data to CloudWatch.
@@ -412,9 +514,12 @@ func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 		}
 		_, err := p.PutMetricData(ctx, in)
 		if err != nil {
+			// the batch holds up to maxMetricsPerRequest datums; log its size,
+			// not its content
 			logger.KV(xlog.ERROR,
 				"reason", "publish",
-				"data", data,
+				"namespace", p.cloudWatchNamespace,
+				"count", len(data),
 				"err", err.Error())
 			return errors.Wrap(err, "failed to publish metrics")
 		}

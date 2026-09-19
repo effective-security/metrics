@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/cockroachdb/errors"
+	"github.com/effective-security/xlog"
 )
 
 // InmemSink provides a Sink that does in-memory aggregation
@@ -75,6 +76,9 @@ func NewIntervalMetrics(intv time.Time) *IntervalMetrics {
 // durations, for example:
 //
 //	inmem://localhost?interval=10s&retain=1m
+//
+// Unlike NewInmemSink, an interval that is not positive or a retention shorter
+// than two intervals is rejected with an error instead of being clamped.
 func NewInmemSinkFromURL(u *url.URL) (Sink, error) {
 	params := u.Query()
 
@@ -87,17 +91,53 @@ func NewInmemSinkFromURL(u *url.URL) (Sink, error) {
 	if err != nil {
 		return nil, errors.WithMessage(err, "bad 'retain' param")
 	}
+	if interval <= 0 {
+		return nil, errors.Errorf("bad 'interval' param: must be positive, got %s", interval)
+	}
+	if retain < minRetainIntervals*interval {
+		return nil, errors.Errorf("bad 'retain' param: must be at least %s for interval %s, got %s",
+			minRetainIntervals*interval, interval, retain)
+	}
 
 	return NewInmemSink(interval, retain), nil
 }
 
+// Retention bounds enforced by NewInmemSink.
+const (
+	// defaultInmemInterval replaces an interval that is not positive.
+	defaultInmemInterval = 10 * time.Second
+	// minRetainIntervals is the smallest usable retention, in intervals:
+	// one interval is always being aggregated, so reporting a finished one
+	// needs a second.
+	minRetainIntervals = 2
+)
+
 // NewInmemSink is used to construct a new in-memory sink,
 // with an aggregation interval and a maximum retention period.
 //
-// interval must be greater than zero, and retain must be at least twice the
-// interval: a shorter retention leaves no finished interval to report.
-// See FINDINGS.md #3 and #4 for what currently happens otherwise.
+// interval must be greater than zero and retain must be at least twice the
+// interval. Values outside that range are clamped, with an error logged
+// naming the parameter, so a misconfiguration degrades the reported window
+// instead of panicking at the first emission.
 func NewInmemSink(interval, retain time.Duration) *InmemSink {
+	if interval <= 0 {
+		logger.KV(xlog.ERROR,
+			"reason", "invalid_interval",
+			"interval", interval,
+			"using", defaultInmemInterval,
+		)
+		interval = defaultInmemInterval
+	}
+	if minRetain := minRetainIntervals * interval; retain < minRetain {
+		logger.KV(xlog.ERROR,
+			"reason", "invalid_retain",
+			"retain", retain,
+			"interval", interval,
+			"using", minRetain,
+		)
+		retain = minRetain
+	}
+
 	rateTimeUnit := time.Second
 	i := &InmemSink{
 		interval:     interval,
@@ -163,10 +203,14 @@ func (i *InmemSink) AddSample(key string, val float64, tags []Tag) {
 // Data is used to retrieve all the aggregated metrics, oldest interval first.
 // The last entry is the interval currently being written to.
 //
-// Finished intervals are returned by reference and must be read under their own
-// RLock. The current interval is returned as a fresh IntervalMetrics with copied
-// maps, but the AggregateSample values inside are shared with the live interval,
-// so a concurrent emission still races with reading them. See FINDINGS.md #2.
+// Every interval is an independent copy, taken under its own lock, including
+// the AggregateSample behind each counter and sample. Reading the result needs
+// no lock and it does not change afterwards. Even a finished interval has to
+// be copied: an emitter can resolve its interval, be descheduled across the
+// bucket rollover, and write to it after it stopped being the current one.
+//
+// The Tag slices in Labels are shared with the sink and must be treated as
+// read-only.
 func (i *InmemSink) Data() []*IntervalMetrics {
 	// Get the current interval, forces creation
 	i.getInterval()
@@ -174,28 +218,42 @@ func (i *InmemSink) Data() []*IntervalMetrics {
 	i.intervalLock.RLock()
 	defer i.intervalLock.RUnlock()
 
-	n := len(i.intervals)
-	intervals := make([]*IntervalMetrics, n)
-
-	copy(intervals[:n-1], i.intervals[:n-1])
-	current := i.intervals[n-1]
-
-	// make its own copy for current interval
-	intervals[n-1] = &IntervalMetrics{}
-	copyCurrent := intervals[n-1]
-	current.RLock()
-	copyCurrent.Interval = current.Interval
-
-	copyCurrent.Gauges = make(map[string]GaugeValue, len(current.Gauges))
-	maps.Copy(copyCurrent.Gauges, current.Gauges)
-	// saved values will not change, just copy the link
-	copyCurrent.Counters = make(map[string]SampledValue, len(current.Counters))
-	maps.Copy(copyCurrent.Counters, current.Counters)
-	copyCurrent.Samples = make(map[string]SampledValue, len(current.Samples))
-	maps.Copy(copyCurrent.Samples, current.Samples)
-	current.RUnlock()
+	intervals := make([]*IntervalMetrics, len(i.intervals))
+	for idx, intv := range i.intervals {
+		intervals[idx] = intv.clone()
+	}
 
 	return intervals
+}
+
+// clone returns an independent copy of the interval, taken under its read lock.
+func (m *IntervalMetrics) clone() *IntervalMetrics {
+	m.RLock()
+	defer m.RUnlock()
+
+	out := &IntervalMetrics{
+		Interval: m.Interval,
+		Gauges:   make(map[string]GaugeValue, len(m.Gauges)),
+		Counters: cloneSampledValues(m.Counters),
+		Samples:  cloneSampledValues(m.Samples),
+	}
+	maps.Copy(out.Gauges, m.Gauges)
+
+	return out
+}
+
+// cloneSampledValues copies the map together with the AggregateSample each
+// value points to, so the result shares no statistics with the source.
+func cloneSampledValues(src map[string]SampledValue) map[string]SampledValue {
+	out := make(map[string]SampledValue, len(src))
+	for k, v := range src {
+		if v.AggregateSample != nil {
+			agg := *v.AggregateSample
+			v.AggregateSample = &agg
+		}
+		out[k] = v
+	}
+	return out
 }
 
 // getExistingInterval returns the interval for intv if it is the current one.
@@ -227,9 +285,11 @@ func (i *InmemSink) createInterval(intv time.Time) *IntervalMetrics {
 	i.intervals = append(i.intervals, current)
 	n++
 
-	// Truncate the intervals if they are too long
-	if n >= i.maxIntervals {
+	// Truncate the intervals if they are too long, and clear the vacated
+	// tail so the evicted intervals can be collected
+	if n > i.maxIntervals {
 		copy(i.intervals[0:], i.intervals[n-i.maxIntervals:])
+		clear(i.intervals[i.maxIntervals:n])
 		i.intervals = i.intervals[:i.maxIntervals]
 	}
 	return current

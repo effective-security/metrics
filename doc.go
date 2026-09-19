@@ -66,7 +66,11 @@
 //
 // # Concurrency
 //
-// All sinks in this module are safe for concurrent emission. [Metrics.UpdateFilter]
-// is not: it mutates the filter slices in place and must not be called while
-// other goroutines emit. See FINDINGS.md for the tracked issues.
+// All sinks in this module are safe for concurrent emission, and
+// [Metrics.UpdateFilter] may be called while other goroutines emit: it
+// replaces the filter rules as a whole. Writing to the fields of a [Config]
+// that is in use is not synchronized; construct it, pass it to [New], and
+// change the filters through [Metrics.UpdateFilter] afterwards.
+//
+// [Metrics.Close] stops the runtime metrics collector started by [New].
 package metrics

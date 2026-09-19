@@ -10,14 +10,16 @@
 //   - IncrCounter -> MetricDatum.Value, accumulated
 //   - AddSample   -> MetricDatum.StatisticValues (min/max/sum/count)
 //
-// Tags become CloudWatch dimensions. Metric names are published verbatim; unlike
-// the Prometheus sink no character replacement is applied.
+// Tags become CloudWatch dimensions, up to the 30 that CloudWatch accepts; the
+// extra ones are dropped and reported. Metric names are published verbatim;
+// unlike the Prometheus sink no character replacement is applied.
 //
 // # Lifecycle
 //
 // [NewSink] only builds the client. Call [Sink.Run] in its own goroutine to
-// start the publish loop, and cancel its context to stop it; [Sink.Flush]
-// publishes on demand.
+// start the publish loop, and cancel its context to stop it: [Sink.Run]
+// publishes the last interval before returning. [Sink.Flush] publishes on
+// demand.
 //
 //	sink, err := cloudwatch.NewSink(&cloudwatch.Config{
 //		AwsRegion:       "us-west-2",
