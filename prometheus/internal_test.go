@@ -149,7 +149,7 @@ func TestDefinitions(t *testing.T) {
 
 	// We should see all the metrics desired Expiry behavior
 	expectedNum := 3
-	for i := 0; i < expectedNum; i++ {
+	for i := range expectedNum {
 		select {
 		case m := <-ch:
 			// m is a prometheus.Metric the only thing we can do is Write it to a

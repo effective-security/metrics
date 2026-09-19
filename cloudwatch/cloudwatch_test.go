@@ -53,7 +53,7 @@ func Test_Sink(t *testing.T) {
 	go s.Run(ctx)
 
 	tags := []metrics.Tag{{Name: "tag1", Value: "val1"}}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		s.IncrCounter(fmt.Sprintf("test_counter_%d", i%3), 1, tags)
 		s.SetGauge(fmt.Sprintf("test_gauge_%d", i%3), 1, tags)
 		s.AddSample(fmt.Sprintf("test_sample_%d", i%3), 1, tags)

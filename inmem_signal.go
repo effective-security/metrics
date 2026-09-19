@@ -12,7 +12,10 @@ import (
 )
 
 // InmemSignal is used to listen for a given signal, and when received,
-// to dump the current metrics from the InmemSink to an io.Writer
+// to dump the current metrics from the InmemSink to an io.Writer.
+//
+// It is a debugging aid: sending the signal to a running process prints the
+// finished aggregation intervals, without requiring a metrics backend.
 type InmemSignal struct {
 	signal syscall.Signal
 	inm    *InmemSink
@@ -25,7 +28,9 @@ type InmemSignal struct {
 }
 
 // NewInmemSignal creates a new InmemSignal which listens for a given signal,
-// and dumps the current metrics out to a writer
+// and dumps the current metrics out to a writer.
+//
+// It starts a goroutine that runs until Stop is called.
 func NewInmemSignal(inmem *InmemSink, sig syscall.Signal, w io.Writer) *InmemSignal {
 	i := &InmemSignal{
 		signal: sig,
@@ -40,12 +45,13 @@ func NewInmemSignal(inmem *InmemSink, sig syscall.Signal, w io.Writer) *InmemSig
 }
 
 // DefaultInmemSignal returns a new InmemSignal that responds to SIGUSR1
-// and writes output to stderr. Windows uses SIGBREAK
+// and writes output to stderr. Windows uses SIGBREAK.
 func DefaultInmemSignal(inmem *InmemSink) *InmemSignal {
 	return NewInmemSignal(inmem, DefaultSignal, os.Stderr)
 }
 
-// Stop is used to stop the InmemSignal from listening
+// Stop is used to stop the InmemSignal from listening.
+// It is idempotent and safe for concurrent use.
 func (i *InmemSignal) Stop() {
 	i.stopLock.Lock()
 	defer i.stopLock.Unlock()
@@ -58,7 +64,7 @@ func (i *InmemSignal) Stop() {
 	signal.Stop(i.sigCh)
 }
 
-// run is a long running routine that handles signals
+// run is a long running routine that handles signals.
 func (i *InmemSignal) run() {
 	for {
 		select {
@@ -70,7 +76,9 @@ func (i *InmemSignal) run() {
 	}
 }
 
-// dumpStats is used to dump the data to output writer
+// dumpStats is used to dump the data to the output writer.
+// The interval still being aggregated is skipped, so a dump right after start
+// may produce no output.
 func (i *InmemSignal) dumpStats() {
 	buf := bytes.NewBuffer(nil)
 
@@ -83,13 +91,6 @@ func (i *InmemSignal) dumpStats() {
 			name := i.flattenLabels(val.Name, val.Labels)
 			fmt.Fprintf(buf, "[%v][G] %q: %0.3f\n", intv.Interval, name, val.Value)
 		}
-		/*
-			for name, vals := range intv.Points {
-				for _, val := range vals {
-					fmt.Fprintf(buf, "[%v][P] %q: %0.3f\n", intv.Interval, name, val)
-				}
-			}
-		*/
 		for _, agg := range intv.Counters {
 			name := i.flattenLabels(agg.Name, agg.Labels)
 			fmt.Fprintf(buf, "[%v][C] %q: %s\n", intv.Interval, name, agg.AggregateSample)
@@ -105,14 +106,17 @@ func (i *InmemSignal) dumpStats() {
 	_, _ = i.w.Write(buf.Bytes())
 }
 
-// Flattens the key for formatting along with its labels, removes spaces
+// dumpReplacer normalizes the dumped metric names.
+var dumpReplacer = strings.NewReplacer(" ", "_", ":", "_")
+
+// flattenLabels flattens the name for formatting along with its label values,
+// separated by dots, and removes spaces and colons.
 func (i *InmemSignal) flattenLabels(name string, labels []Tag) string {
 	buf := bytes.NewBufferString(name)
-	replacer := strings.NewReplacer(" ", "_", ":", "_")
 
 	for _, label := range labels {
-		_, _ = replacer.WriteString(buf, ".")
-		_, _ = replacer.WriteString(buf, label.Value)
+		_, _ = dumpReplacer.WriteString(buf, ".")
+		_, _ = dumpReplacer.WriteString(buf, label.Value)
 	}
 
 	return buf.String()

@@ -6,7 +6,8 @@ import (
 	"time"
 )
 
-// SetGauge should retain the last value it is set to
+// SetGauge emits a gauge, which should retain the last value it is set to.
+// The metric is dropped when the configured filters block the key.
 func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.Prepare(TypeGauge, key, tags...)
 	if !allowed {
@@ -15,7 +16,8 @@ func (m *Metrics) SetGauge(key string, val float64, tags ...Tag) {
 	m.sink.SetGauge(keys, val, labels)
 }
 
-// IncrCounter should accumulate values
+// IncrCounter emits a counter increment, which should accumulate values.
+// The metric is dropped when the configured filters block the key.
 func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.Prepare(TypeCounter, key, tags...)
 	if !allowed {
@@ -24,7 +26,8 @@ func (m *Metrics) IncrCounter(key string, val float64, tags ...Tag) {
 	m.sink.IncrCounter(keys, val, labels)
 }
 
-// AddSample is for timing information, where quantiles are used
+// AddSample emits a sample, for timing information where quantiles are used.
+// The metric is dropped when the configured filters block the key.
 func (m *Metrics) AddSample(key string, val float64, tags ...Tag) {
 	allowed, keys, labels := m.Prepare(TypeSample, key, tags...)
 	if !allowed {
@@ -33,7 +36,12 @@ func (m *Metrics) AddSample(key string, val float64, tags ...Tag) {
 	m.sink.AddSample(keys, val, labels)
 }
 
-// MeasureSince is for timing information
+// MeasureSince emits the time elapsed since start as a sample,
+// in units of Config.TimerGranularity (milliseconds by default).
+//
+// It is typically deferred at the top of the measured call:
+//
+//	defer m.MeasureSince("handler_duration", time.Now())
 func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 	elapsed := time.Since(start)
 	msec := float64(elapsed.Nanoseconds()) / float64(m.TimerGranularity)
@@ -46,12 +54,14 @@ func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 }
 
 // UpdateFilter overwrites the existing filter with the given rules.
+// It is not safe to call while other goroutines emit metrics.
 func (m *Metrics) UpdateFilter(allow, block []string) {
 	m.AllowedPrefixes = allow
 	m.BlockedPrefixes = block
 }
 
-// Periodically collects runtime stats to publish
+// collectStats periodically collects runtime stats to publish.
+// It runs until the process exits; there is no way to stop it.
 func (m *Metrics) collectStats() {
 	for {
 		time.Sleep(m.ProfileInterval)
@@ -59,7 +69,12 @@ func (m *Metrics) collectStats() {
 	}
 }
 
-// Emits various runtime statsitics
+// maxGCPauses is the number of GC pause samples retained by runtime.MemStats.
+const maxGCPauses = 256
+
+// emitRuntimeStats emits various runtime statistics.
+// runtime.ReadMemStats stops the world, so ProfileInterval should stay
+// well above the collection cost.
 func (m *Metrics) emitRuntimeStats() {
 	// Export number of Goroutines
 	numRoutines := runtime.NumGoroutine()
@@ -84,13 +99,13 @@ func (m *Metrics) emitRuntimeStats() {
 		m.lastNumGC = 0
 	}
 
-	// Ensure we don't scan more than 256
-	if num-m.lastNumGC >= 256 {
-		m.lastNumGC = num - 255
+	// Ensure we don't scan more than the retained pauses
+	if num-m.lastNumGC >= maxGCPauses {
+		m.lastNumGC = num - (maxGCPauses - 1)
 	}
 
 	for i := m.lastNumGC; i < num; i++ {
-		pause := stats.PauseNs[i%256]
+		pause := stats.PauseNs[i%maxGCPauses]
 		m.AddSample("runtime_gc_pause_ns", float64(pause))
 	}
 	m.lastNumGC = num

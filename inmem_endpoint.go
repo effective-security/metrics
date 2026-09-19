@@ -1,49 +1,77 @@
 package metrics
 
 import (
-	"fmt"
-	"sort"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/cockroachdb/errors"
 )
 
-// Summary holds a roll-up of metrics info for a given interval
+// Summary holds a roll-up of metrics info for a given interval,
+// in a shape suitable for JSON serialization on a debug endpoint.
 type Summary struct {
 	Timestamp string
 	Gauges    []GaugeValue
-	//Points    []PointValue
-	Counters []SampledValue
-	Samples  []SampledValue
+	Counters  []SampledValue
+	Samples   []SampledValue
 }
 
-// GaugeValue provides gauge value
+// GaugeValue provides gauge value.
 type GaugeValue struct {
-	Name  string
-	Hash  string `json:"-"`
+	// Name is the metric name, without the flattened tags.
+	Name string
+	// Hash is the aggregation key: the name with its tags appended.
+	Hash string `json:"-"`
+	// Value is the last value set in the interval.
 	Value float64
 
-	Labels        []Tag             `json:"-"`
+	// Labels are the tags the value was emitted with.
+	Labels []Tag `json:"-"`
+	// DisplayLabels is the serializable form of Labels,
+	// populated by DisplayMetrics.
 	DisplayLabels map[string]string `json:"Labels"`
 }
 
-// PointValue provides point value
+// PointValue provides point value.
+//
+// It is unused: EmitKey is not part of the Sink interface, because Prometheus
+// has no type that retains an arbitrary number of values. The type is retained
+// for API compatibility only.
 type PointValue struct {
 	Name   string
 	Points []float64
 }
 
-// SampledValue provides sample value
+// SampledValue provides sample value.
+//
+// The embedded AggregateSample is a pointer shared with the interval it was
+// read from, so Mean and Stddev are snapshots taken when the value was
+// formatted.
 type SampledValue struct {
+	// Name is the metric name, without the flattened tags.
 	Name string
+	// Hash is the aggregation key: the name with its tags appended.
 	Hash string `json:"-"`
 	*AggregateSample
-	Mean   float64
+	// Mean of the aggregated values, computed by DisplayMetrics.
+	Mean float64
+	// Stddev of the aggregated values, computed by DisplayMetrics.
 	Stddev float64
 
-	Labels        []Tag             `json:"-"`
+	// Labels are the tags the value was emitted with.
+	Labels []Tag `json:"-"`
+	// DisplayLabels is the serializable form of Labels,
+	// populated by DisplayMetrics.
 	DisplayLabels map[string]string `json:"Labels"`
 }
 
-// DisplayMetrics returns a summary of the metrics from the most recent finished interval.
+// DisplayMetrics returns a summary of the metrics from the most recent
+// finished interval, with the values sorted by aggregation key.
+//
+// It returns an error when no interval has been recorded yet. It reads the
+// live intervals rather than a snapshot, so it races with concurrent
+// emissions; see FINDINGS.md #2.
 func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 	data := i.Data()
 
@@ -51,7 +79,7 @@ func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 	n := len(data)
 	switch n {
 	case 0:
-		return nil, fmt.Errorf("no metric intervals have been initialized yet")
+		return nil, errors.New("no metric intervals have been initialized yet")
 	case 1:
 		// Show the current interval if it's all we have
 		interval = i.intervals[0]
@@ -63,21 +91,10 @@ func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 	summary := Summary{
 		Timestamp: interval.Interval.Round(time.Second).UTC().String(),
 		Gauges:    make([]GaugeValue, 0, len(interval.Gauges)),
-		//Points:    make([]PointValue, 0, len(interval.Points)),
 	}
 
 	// Format and sort the output of each metric type, so it gets displayed in a
 	// deterministic order.
-
-	/*
-		for name, points := range interval.Points {
-			summary.Points = append(summary.Points, PointValue{name, points})
-		}
-		sort.Slice(summary.Points, func(i, j int) bool {
-			return summary.Points[i].Name < summary.Points[j].Name
-		})
-	*/
-
 	for hash, value := range interval.Gauges {
 		value.Hash = hash
 		value.DisplayLabels = make(map[string]string)
@@ -88,8 +105,8 @@ func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 
 		summary.Gauges = append(summary.Gauges, value)
 	}
-	sort.Slice(summary.Gauges, func(i, j int) bool {
-		return summary.Gauges[i].Hash < summary.Gauges[j].Hash
+	slices.SortFunc(summary.Gauges, func(a, b GaugeValue) int {
+		return strings.Compare(a.Hash, b.Hash)
 	})
 
 	summary.Counters = formatSamples(interval.Counters)
@@ -98,10 +115,12 @@ func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 	return &summary, nil
 }
 
+// formatSamples converts the aggregation map into a sorted slice,
+// resolving the derived Mean and Stddev and the displayable labels.
 func formatSamples(source map[string]SampledValue) []SampledValue {
 	output := make([]SampledValue, 0, len(source))
 	for hash, sample := range source {
-		displayLabels := make(map[string]string)
+		displayLabels := make(map[string]string, len(sample.Labels))
 		for _, label := range sample.Labels {
 			displayLabels[label.Name] = label.Value
 		}
@@ -115,8 +134,8 @@ func formatSamples(source map[string]SampledValue) []SampledValue {
 			DisplayLabels:   displayLabels,
 		})
 	}
-	sort.Slice(output, func(i, j int) bool {
-		return output[i].Hash < output[j].Hash
+	slices.SortFunc(output, func(a, b SampledValue) int {
+		return strings.Compare(a.Hash, b.Hash)
 	})
 
 	return output

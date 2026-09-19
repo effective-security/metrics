@@ -15,7 +15,7 @@ import (
 )
 
 func run(p metrics.Provider, times int) {
-	for i := 0; i < times; i++ {
+	for i := range times {
 		p.SetGauge("test_metrics_gauge", float64(i))
 		p.IncrCounter("test_metrics_counter", float64(i))
 		p.AddSample("test_metrics_sample", float64(i))

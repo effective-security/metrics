@@ -2,7 +2,6 @@ package cloudwatch
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -21,42 +20,65 @@ import (
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "cloudwatch")
 
-// Publisher provides interface to publish metrics
+const (
+	// defaultPublishInterval is used when Config.PublishInterval is not set.
+	defaultPublishInterval = 30 * time.Second
+	// defaultMetricsExpiry is used when Config.MetricsExpiry is not set.
+	defaultMetricsExpiry = 60 * time.Minute
+	// maxMetricsPerRequest is the maximum number of metric data items
+	// accepted by a single PutMetricData call.
+	maxMetricsPerRequest = 1000
+	// maxDimensions is the number of dimensions AWS accepts per metric.
+	maxDimensions = 10
+	// labelKeySizeHint is the assumed size of one ";name=value" pair,
+	// used to pre-size the hash buffer.
+	labelKeySizeHint = 24
+)
+
+// Publisher provides interface to publish metrics.
+// It is the subset of the CloudWatch client the Sink uses, so tests and
+// wrappers can substitute their own implementation.
 type Publisher interface {
-	//Publish(ctx context.Context, data []types.MetricDatum) error
 	PutMetricData(ctx context.Context, params *cloudwatch.PutMetricDataInput, optFns ...func(*cloudwatch.Options)) (*cloudwatch.PutMetricDataOutput, error)
 }
 
 // Config defines configuration options
 type Config struct {
-	// AwsRegion is the required AWS Region to use
+	// AwsRegion is the required AWS Region to use.
+	// Falls back to the AWS_REGION and AWS_DEFAULT_REGION environment variables.
 	AwsRegion string
 
-	// AwsEndpoint is the optional AWS endpoint to use
+	// AwsEndpoint is the optional AWS endpoint to use,
+	// for example a local CloudWatch emulator.
 	AwsEndpoint string
 
 	// Namespace specifies the namespace under which metrics should be published.
+	// It is required.
 	Namespace string
 
 	// PublishInterval specifies the frequency with which metrics should be published to Cloudwatch.
+	// Defaults to 30s.
 	PublishInterval time.Duration
 
-	// // PublishTimeout is the timeout for sending metrics to Cloudwatch.
-	// PublishTimeout time.Duration
-
 	// MetricsExpiry is the period after which the metrics will be deleted from reporting if not used.
+	// Defaults to 60m.
 	MetricsExpiry time.Duration
 
-	// WithSampleCount specifies to create additional _count and _sum metrics for sample
+	// WithSampleCount specifies to create additional _count, _sum and _avg metrics for sample
 	WithSampleCount bool
 
-	// WithCleanup specifies to clean up published metrics
+	// WithCleanup specifies to clean up published metrics,
+	// so each publish reports only the activity of the last interval.
 	WithCleanup bool
 }
 
-// Sink provides a MetricSink that can be used
-// with a prometheus server.
+// Sink provides a metrics.Sink that publishes to AWS CloudWatch.
+//
+// Emissions are aggregated in memory and sent by Run or Flush.
+// It is safe for concurrent emission.
 type Sink struct {
+	// Publisher is the CloudWatch client used to publish.
+	// Replace it before Run is started to publish through a custom client.
 	Publisher
 
 	mu                        sync.Mutex
@@ -72,7 +94,9 @@ type Sink struct {
 }
 
 // NewSink initializes and returns a pointer to a CloudWatch Sink using the
-// supplied configuration, or an error if there is a problem with the configuration
+// supplied configuration, or an error if there is a problem with the configuration.
+//
+// It only builds the client; call Run to start publishing.
 func NewSink(c *Config) (*Sink, error) {
 	sink := &Sink{
 		gauges:                    make(map[string]*types.MetricDatum),
@@ -87,10 +111,10 @@ func NewSink(c *Config) (*Sink, error) {
 	}
 
 	if sink.cloudWatchPublishInterval == 0 {
-		sink.cloudWatchPublishInterval = 30 * time.Second
+		sink.cloudWatchPublishInterval = defaultPublishInterval
 	}
 	if sink.expiration == 0 {
-		sink.expiration = 60 * time.Minute
+		sink.expiration = defaultMetricsExpiry
 	}
 
 	var err error
@@ -103,7 +127,10 @@ func NewSink(c *Config) (*Sink, error) {
 }
 
 // Run starts a loop that will push metrics to Cloudwatch at the configured interval.
-// Accepts a context.Context to support cancellation
+// Accepts a context.Context to support cancellation.
+//
+// It returns when ctx is cancelled, after a final flush, or when publishing
+// fails with expired or missing credentials, which cannot succeed on a retry.
 func (p *Sink) Run(ctx context.Context) {
 	ticker := time.NewTicker(p.cloudWatchPublishInterval)
 	defer ticker.Stop()
@@ -134,19 +161,19 @@ func (p *Sink) Run(ctx context.Context) {
 	}
 }
 
-// Flush the data to CloudWatch
+// Flush publishes the aggregated data to CloudWatch,
+// in batches of at most maxMetricsPerRequest data items.
 func (p *Sink) Flush(ctx context.Context) error {
 	data := p.Data()
 	total := len(data)
 
-	// 1000 is the max metrics per request
-	for len(data) > 1000 {
-		put := data[0:1000]
+	for len(data) > maxMetricsPerRequest {
+		put := data[0:maxMetricsPerRequest]
 		err := p.Publish(ctx, put)
 		if err != nil {
 			return err
 		}
-		data = data[1000:]
+		data = data[maxMetricsPerRequest:]
 	}
 
 	if len(data) > 0 {
@@ -162,15 +189,28 @@ func (p *Sink) Flush(ctx context.Context) error {
 	return nil
 }
 
+// flattenKey returns the metric name, which is published as-is, and the hash
+// that identifies the aggregated datum: the name with its tags appended.
 func (p *Sink) flattenKey(key string, labels []metrics.Tag) (string, string) {
-	hash := key
-	for _, label := range labels {
-		hash += fmt.Sprintf(";%s=%s", label.Name, label.Value)
+	if len(labels) == 0 {
+		return key, key
 	}
 
-	return key, hash
+	buf := new(strings.Builder)
+	buf.Grow(len(key) + len(labels)*labelKeySizeHint)
+	buf.WriteString(key)
+	for _, label := range labels {
+		buf.WriteByte(';')
+		buf.WriteString(label.Name)
+		buf.WriteByte('=')
+		buf.WriteString(label.Value)
+	}
+
+	return key, buf.String()
 }
 
+// dimensions converts the tags into CloudWatch dimensions.
+// It panics when there are more than maxDimensions tags, see FINDINGS.md #8.
 func dimensions(labels []metrics.Tag) []types.Dimension {
 	ds := make([]types.Dimension, len(labels))
 	for idx, v := range labels {
@@ -180,8 +220,8 @@ func dimensions(labels []metrics.Tag) []types.Dimension {
 		}
 	}
 
-	if len(ds) > 10 {
-		logger.Panicf("AWS does not support more than 10 dimensions: %v", ds)
+	if len(ds) > maxDimensions {
+		logger.Panicf("AWS does not support more than %d dimensions: %v", maxDimensions, ds)
 	}
 	return ds
 }
@@ -191,7 +231,7 @@ const (
 	storageResolutionVal = int32(60)
 )
 
-// SetGauge should retain the last value it is set to
+// SetGauge retains the last value it is set to, until it is published.
 func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -205,23 +245,24 @@ func (p *Sink) SetGauge(key string, val float64, tags []metrics.Tag) {
 			MetricName:        &key,
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
-			Value:             aws.Float64(float64(val)),
+			Value:             aws.Float64(val),
 			StorageResolution: aws.Int32(storageResolutionVal),
 		}
 		p.gauges[hash] = g
 	} else {
-		g.Value = aws.Float64(float64(val))
+		g.Value = aws.Float64(val)
 		g.Timestamp = aws.Time(now)
 	}
 }
 
-// AddSample is for timing information, where quantiles are used
+// AddSample records an observation into the statistic set (min, max, sum,
+// count) published for the metric. CloudWatch derives the quantiles it offers
+// from that set, so individual values are not retained.
 func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	now := time.Now()
-	val64 := float64(val)
-	valPtr := aws.Float64(val64)
+	valPtr := aws.Float64(val)
 	key, hash := p.flattenKey(key, tags)
 	p.updates[hash] = now
 	g, ok := p.samples[hash]
@@ -241,19 +282,19 @@ func (p *Sink) AddSample(key string, val float64, tags []metrics.Tag) {
 		}
 		p.samples[hash] = g
 	} else {
-		if val64 < *g.StatisticValues.Minimum {
+		if val < *g.StatisticValues.Minimum {
 			g.StatisticValues.Minimum = valPtr
 		}
-		if val64 > *g.StatisticValues.Maximum {
+		if val > *g.StatisticValues.Maximum {
 			g.StatisticValues.Maximum = valPtr
 		}
 		g.StatisticValues.SampleCount = aws.Float64(*g.StatisticValues.SampleCount + 1)
-		g.StatisticValues.Sum = aws.Float64(*g.StatisticValues.Sum + val64)
+		g.StatisticValues.Sum = aws.Float64(*g.StatisticValues.Sum + val)
 		g.Timestamp = aws.Time(now)
 	}
 }
 
-// IncrCounter should accumulate values
+// IncrCounter accumulates values until they are published.
 func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -268,11 +309,11 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 			Timestamp:         aws.Time(now),
 			Dimensions:        dimensions(tags),
 			StorageResolution: aws.Int32(storageResolutionVal),
-			Value:             aws.Float64(float64(val)),
+			Value:             aws.Float64(val),
 		}
 		p.counters[hash] = g
 	} else {
-		g.Value = aws.Float64(*g.Value + float64(val))
+		g.Value = aws.Float64(*g.Value + val)
 		g.Timestamp = aws.Time(now)
 	}
 }
@@ -280,6 +321,11 @@ func (p *Sink) IncrCounter(key string, val float64, tags []metrics.Tag) {
 // Data returns collected metrics and allows us to enforce our expiration
 // logic to clean up ephemeral metrics if their value haven't been set for a
 // duration exceeding our allowed expiration time.
+//
+// When Config.WithSampleCount is set, each sample also yields _count, _sum and
+// _avg metrics. When Config.WithCleanup is set, the returned data is removed
+// from the sink. The returned data shares the statistic sets with the sink,
+// so concurrent emissions can still change it; see FINDINGS.md #6.
 func (p *Sink) Data() []types.MetricDatum {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -356,7 +402,8 @@ func (p *Sink) Data() []types.MetricDatum {
 	return data
 }
 
-// Publish metrics
+// Publish sends one batch of metric data to CloudWatch.
+// The batch must not exceed maxMetricsPerRequest items.
 func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 	if len(data) > 0 {
 		in := &cloudwatch.PutMetricDataInput{
@@ -375,7 +422,11 @@ func (p *Sink) Publish(ctx context.Context, data []types.MetricDatum) error {
 	return nil
 }
 
-func newPublisher(c *Config) (Publisher, error) { //nolint:staticcheck
+// newPublisher builds the CloudWatch client from the configuration,
+// the standard AWS credential chain, and the AWS_ACCESS_KEY_ID,
+// AWS_SECRET_ACCESS_KEY and AWS_SESSION_TOKEN environment variables
+// when they are set.
+func newPublisher(c *Config) (Publisher, error) {
 	if c.Namespace == "" {
 		return nil, errors.New("CloudWatchNamespace required")
 	}
@@ -391,19 +442,7 @@ func newPublisher(c *Config) (Publisher, error) { //nolint:staticcheck
 
 	if c.AwsEndpoint != "" {
 		// https://aws.github.io/aws-sdk-go-v2/docs/configuring-sdk/endpoints/
-		customResolver := aws.EndpointResolverWithOptionsFunc(func(svc, reg string, _ ...any) (aws.Endpoint, error) { //nolint:staticcheck
-			if svc == cloudwatch.ServiceID && reg == region {
-				ep := aws.Endpoint{ //nolint:staticcheck
-					PartitionID:   "aws",
-					URL:           c.AwsEndpoint,
-					SigningRegion: region,
-				}
-				return ep, nil
-			}
-			// returning EndpointNotFoundError will allow the service to fallback to it's default resolution
-			return aws.Endpoint{}, &aws.EndpointNotFoundError{} //nolint:staticcheck
-		})
-		awsops = append(awsops, awsconfig.WithEndpointResolverWithOptions(customResolver)) //nolint:staticcheck
+		awsops = append(awsops, awsconfig.WithBaseEndpoint(c.AwsEndpoint))
 	}
 
 	id := os.Getenv("AWS_ACCESS_KEY_ID")
