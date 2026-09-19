@@ -374,9 +374,15 @@ func Test_DescribeHelp(t *testing.T) {
 		EnableTypePrefix:     true,  // Disable type prefix
 		FilterDefault:        true,  // Don't filter metrics by default
 		GlobalPrefix:         "global",
-		BlockedPrefixes:      []string{"global_es_summary_"},
+		// "summary" is an alias of TypeSample, so the help key, and the
+		// blocking prefix, use the type the sample is emitted with
+		BlockedPrefixes: []string{"global_es_sample_"},
 	}
 	help = cfg.Help(list)
 	require.Len(t, help, 1)
 	assert.Equal(t, help["global_es_counter_test"], "test counter metric")
+
+	// the help key must match the name the metric is emitted under
+	_, key, _ := cfg.Prepare(metrics.TypeCounter, "test")
+	assert.Equal(t, "global_es_counter_test", key)
 }

@@ -130,7 +130,10 @@ func (s *Service) Charge(ctx context.Context) error {
 A call with the wrong number of values logs an error and emits with a single
 `invalid_tags` tag, so the mistake shows up in the backend instead of silently
 producing a differently-shaped series. `Describe.Type` must be one of
-`metrics.TypeCounter`, `metrics.TypeGauge` or `metrics.TypeSample`.
+`metrics.TypeCounter`, `metrics.TypeGauge` or `metrics.TypeSample`; the
+legacy value `"summary"` is accepted as an alias of `metrics.TypeSample`, since
+that is how the Prometheus sink exports samples. Any other value is logged and
+used as given.
 
 ## Configuration
 
@@ -142,14 +145,14 @@ producing a differently-shaped series. `Describe.Type` must be one of
 | `EnableHostnameLabel` | `false` | include the hostname as a tag instead (wins over the prefix) |
 | `EnableServiceLabel` | `false` | include the service as a tag instead of a prefix |
 | `EnableTypePrefix` | `false` | prefix the key with `counter`, `gauge` or `sample` |
-| `EnableRuntimeMetrics` | `true` | emit `runtime_*` gauges and GC samples in the background |
+| `EnableRuntimeMetrics` | `true` | emit `runtime_*` gauges and GC samples in the background, until `Close` |
 | `ProfileInterval` | `1s` | how often runtime metrics are collected |
 | `TimerGranularity` | `1ms` | the unit `MeasureSince` reports |
 | `GlobalPrefix` | empty | prefixed before everything else |
 | `GlobalTags` | empty | tags added to every metric |
 | `NumberLabelPrefix` | empty | prefix for tag values of 15+ digits, so large IDs are not coerced to floats |
-| `AllowedPrefixes` / `BlockedPrefixes` | empty | prefix filters, applied to the final key |
-| `FilterDefault` | `true` | verdict for keys that no filter rule decides |
+| `AllowedPrefixes` / `BlockedPrefixes` | empty | prefix filters, applied to the final key; a block wins over an allow |
+| `FilterDefault` | `true` | verdict for keys that match no prefix rule |
 
 The final metric name is assembled in this order, including only the parts that
 are configured:
@@ -164,22 +167,34 @@ For example, `GlobalPrefix: "es"`, `ServiceName: "billing"`,
 
 ### Filtering
 
-Filters are applied to the assembled key, before the sink is called:
+Filters are applied to the assembled key, before the sink is called. A key
+matching `BlockedPrefixes` is dropped, a key matching `AllowedPrefixes` is
+emitted, and a key matching neither falls back to `FilterDefault`. A block
+always wins over an allow.
 
 ```go
 cfg := metrics.DefaultConfig("billing")
 cfg.BlockedPrefixes = []string{"billing_runtime_"} // drop runtime noise
 cfg.FilterDefault = true                           // everything else passes
+```
 
-// or at runtime
+To publish only a known set of metrics, list them and turn the default off:
+
+```go
+cfg.AllowedPrefixes = []string{"billing_charge_", "billing_refund_"}
+cfg.FilterDefault = false // anything else is dropped
+```
+
+The rules can be replaced at runtime, from any goroutine, while others emit:
+
+```go
 metrics.UpdateFilter(nil, []string{"billing_runtime_"})
 ```
 
-> **Caveat**: `BlockedPrefixes` works as documented, but `AllowedPrefixes`
-> currently does not restrict anything — see
-> [FINDINGS #1](FINDINGS.md#1). Use the block list until that is resolved, and
-> do not call `UpdateFilter` while other goroutines emit
-> ([FINDINGS #5](FINDINGS.md#5)).
+`UpdateFilter` swaps the whole rule set atomically, so an emission sees either
+the old rules or the new ones. It does not write back to the `Config` the
+provider was built from; `Metrics.AllowMetric` and `Metrics.Help` report the
+rules in effect.
 
 ## Tags
 
@@ -194,8 +209,9 @@ metrics.IncrCounter("charge_total", 1,
 
 Every distinct combination of values creates a new series. Tag with bounded
 values — a status, a region, a provider name — never with user ids, request
-ids, or error strings. The Prometheus sink never expires counters, so an
-unbounded tag grows memory for the lifetime of the process.
+ids, or error strings. The Prometheus sink keeps counters for the lifetime of
+the process unless `Opts.CounterExpiration` is set, so an unbounded tag grows
+memory until then.
 
 ## Sinks
 
@@ -229,6 +245,35 @@ Pre-declared series are initialized at zero, are never expired, and appear in
 the first scrape even before anything is emitted. Metric names are sanitized
 (` `, `.`, `=`, `-`, `/` become `_`). Samples are exported as summaries with the
 0.5, 0.9 and 0.99 quantiles.
+
+A series the client library would reject (an empty name, a label name starting
+with `__`, invalid UTF-8) is dropped and logged instead of being registered:
+one such series would otherwise fail every scrape with HTTP 500 until it
+expires. Two sinks on the same registerer need different `Name`s;
+`NewSinkFrom` returns an error, and no sink, for a duplicate.
+
+`Expiration` covers gauges and summaries. Counters are kept for the lifetime of
+the process, because deleting one resets the series and breaks `rate()` across
+the gap. If a counter label is unbounded and a reset is the lesser problem, set
+`CounterExpiration`:
+
+```go
+opts := esprom.Opts{
+	Expiration:        time.Minute,
+	CounterExpiration: time.Hour, // drop counters idle for an hour
+}
+```
+
+To push instead of being scraped, use `NewPushSinkFrom`, which takes the same
+options, and `Shutdown` to stop the push loop:
+
+```go
+sink, err := esprom.NewPushSinkFrom(gatewayAddr, time.Minute, "nightly-job", opts)
+if err != nil {
+	return err
+}
+defer sink.Shutdown()
+```
 
 ### CloudWatch
 
@@ -270,9 +315,12 @@ if _, err := metrics.NewGlobal(metrics.DefaultConfig("billing"), inm); err != ni
 summary, err := inm.DisplayMetrics()
 ```
 
-`retain` must be at least twice `interval`, and `interval` must not be zero
-([FINDINGS #3](FINDINGS.md#3), [#4](FINDINGS.md#4)). On the signal, the
-retained intervals are written to stderr:
+`retain` must be at least twice `interval`, since one interval is always still
+being aggregated. Values outside that range are clamped, with an error logged
+naming the parameter; `factory.NewMetricSinkFromURL` rejects them instead.
+`Data` returns a snapshot, so it is safe to read while other goroutines emit.
+
+On the signal, the retained intervals are written to stderr:
 
 ```
 [2026-09-19 14:57:33 +0000 UTC][G] "billing_charge_amount": 42.000
@@ -309,9 +357,16 @@ emits, every `ProfileInterval`:
 `runtime_gc_pause_ns` as a sample per GC cycle.
 
 The collector calls `runtime.ReadMemStats`, which stops the world; on a large
-heap, raise `ProfileInterval` or turn the collector off. It cannot be stopped
-once started ([FINDINGS #12](FINDINGS.md#12)), so create at most one provider
-with it enabled.
+heap, raise `ProfileInterval` or turn the collector off
+([FINDINGS #14](FINDINGS.md#14)). Call `Close` to stop it:
+
+```go
+prov, err := metrics.New(cfg, sink)
+if err != nil {
+	return err
+}
+defer prov.Close()
+```
 
 ## Testing instrumentation
 
@@ -321,6 +376,7 @@ Use an `InmemSink` and read it back:
 inm := metrics.NewInmemSink(time.Second, time.Minute)
 prov, err := metrics.New(&metrics.Config{FilterDefault: true}, inm)
 require.NoError(t, err)
+defer prov.Close()
 
 prov.IncrCounter("charge_total", 1, metrics.Tag{Name: "currency", Value: "usd"})
 
@@ -338,6 +394,7 @@ three-method `metrics.Sink` interface with a testify mock.
 ```sh
 make test     # go test ./...
 make covtest  # tests + coverage report (CI gate: 92%)
+make test RACE=true  # tests under the race detector
 make lint     # golangci-lint
 make all      # clean, tools, generate, covtest
 ```

@@ -14,16 +14,20 @@
 //
 // Metric names are sanitized by replacing the characters " ", ".", "=", "-"
 // and "/" with "_". Tag names are passed through unchanged; the Prometheus
-// client escapes names that are not valid UTF-8 label names at exposition time.
+// client escapes names that are not legacy-valid at exposition time. A series
+// the client library rejects outright (an empty name, a label name with the
+// reserved "__" prefix, invalid UTF-8) is dropped and logged, because one
+// erroring descriptor would fail every scrape until the series expires.
 //
 // # Expiration
 //
 // Gauges and summaries created at runtime are removed after [Opts.Expiration]
 // without an update, which keeps ephemeral tag combinations from accumulating.
-// Counters are never removed, because deleting a counter would reset it and
-// break rate() calculations. Series pre-declared through [Opts.GaugeDefinitions],
-// [Opts.SummaryDefinitions] and [Opts.CounterDefinitions] are initialized at
-// zero and never expire.
+// Counters are kept by default, because deleting a counter resets the series
+// and breaks rate() over the gap; set [Opts.CounterExpiration] when the label
+// cardinality is unbounded and a reset is the lesser problem. Series
+// pre-declared through [Opts.GaugeDefinitions], [Opts.SummaryDefinitions] and
+// [Opts.CounterDefinitions] are initialized at zero and never expire.
 //
 // # Usage
 //
@@ -41,5 +45,6 @@
 //	}
 //	http.Handle("/metrics", promhttp.Handler())
 //
-// Use [NewPushSink] instead to push to a Prometheus Pushgateway on an interval.
+// Use [NewPushSinkFrom] instead to push to a Prometheus Pushgateway on an
+// interval, and [PushSink.Shutdown] to stop it.
 package prometheus

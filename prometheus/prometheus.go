@@ -1,20 +1,33 @@
 package prometheus
 
 import (
+	"math"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
+	"github.com/cockroachdb/errors"
 	"github.com/effective-security/metrics"
 	"github.com/effective-security/xlog"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/push"
+	"github.com/prometheus/common/model"
 )
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "prom")
 
-// defaultSinkName is used when Opts.Name is empty.
-const defaultSinkName = "default_prometheus_sink"
+const (
+	// defaultSinkName is used when Opts.Name is empty.
+	defaultSinkName = "default_prometheus_sink"
+	// defaultExpiration is the expiration used by DefaultPrometheusOpts
+	// and NewPushSink.
+	defaultExpiration = 60 * time.Second
+	// reservedLabelPrefix marks the label names the client library keeps for
+	// itself; a series using one has an erroring descriptor.
+	reservedLabelPrefix = "__"
+)
 
 // DefaultPrometheusOpts is the default set of options used when creating a
 // Sink with NewSink.
@@ -22,14 +35,13 @@ const defaultSinkName = "default_prometheus_sink"
 // It is a package-level variable so that it can be adjusted before the sink is
 // created; changing it afterwards has no effect.
 var DefaultPrometheusOpts = Opts{
-	Expiration: 60 * time.Second,
+	Expiration: defaultExpiration,
 	Name:       defaultSinkName,
 }
 
-// ObservationMaxAge defines the duration for which an observation stays relevant
-// for the summary. Only applies to pre-calculated quantiles, does not
-// apply to _sum and _count. Must be positive. The default value is
-// DefMaxAge.
+// ObservationMaxAge is the duration for which an observation stays relevant
+// for the quantiles of a summary. It does not apply to _sum and _count, and is
+// independent of Opts.Expiration.
 const ObservationMaxAge = 10 * time.Minute
 
 // summaryObjectives are the quantiles reported for every summary,
@@ -42,10 +54,20 @@ var summaryObjectives = map[float64]float64{
 
 // Opts is used to configure the Prometheus Sink.
 type Opts struct {
-	// Expiration is the duration a metric is valid for, after which it will be
-	// untracked. If the value is zero, a metric is never expired.
-	// Counters are never expired, regardless of this setting.
+	// Expiration is the duration a gauge or summary is valid for, after which
+	// it will be untracked. If the value is not positive, they are never
+	// expired. Counters are controlled by CounterExpiration instead.
 	Expiration time.Duration
+
+	// CounterExpiration is the duration after which a counter created at
+	// runtime is removed, when it has not been updated. The zero value, which
+	// is the default, keeps every counter for the lifetime of the process, as
+	// does a negative one.
+	//
+	// Deleting a counter resets the series, which makes rate() over the gap
+	// wrong, so only set this when the label cardinality is unbounded and a
+	// reset is the lesser problem.
+	CounterExpiration time.Duration
 
 	// Registerer the Sink registers itself with.
 	// Defaults to prometheus.DefaultRegisterer.
@@ -78,7 +100,8 @@ type Opts struct {
 	// Help of the metrics, keyed by the final metric name.
 	// Use metrics.Config.Help to build it from the metric descriptions, so the
 	// exported HELP text matches the name the configuration produces.
-	// The map is retained and written to by the pre-declared definitions.
+	// The map is retained and written to by the pre-declared definitions; it
+	// must not be modified once the sink is constructed.
 	Help map[string]string
 }
 
@@ -88,14 +111,92 @@ type Opts struct {
 // It implements prometheus.Collector: it is registered on construction and
 // scraped through a prometheus registry. Series are created on first use and,
 // unless pre-declared, expired after Opts.Expiration without an update.
+// It is safe for concurrent emission and concurrent scrapes.
 type Sink struct {
 	// If these will ever be copied, they should be converted to *sync.Map values and initialized appropriately
-	gauges     sync.Map
-	summaries  sync.Map
-	counters   sync.Map
-	expiration time.Duration
-	help       map[string]string
-	name       string
+	gauges            sync.Map
+	summaries         sync.Map
+	counters          sync.Map
+	expiration        time.Duration
+	counterExpiration time.Duration
+	help              map[string]string
+	name              string
+}
+
+// tombstone marks an entry the collector has taken out of the sink. It is out
+// of the range of any real timestamp, so it can never be mistaken for one.
+const tombstone = math.MinInt64
+
+// lastUpdate records when a metric was last written to, and whether it is still
+// part of the sink.
+//
+// It is mutated in place, so an emission does not have to copy the metric and
+// replace the map entry. Concurrent updates may order arbitrarily, which is
+// harmless: every one of them stores approximately the current time. The
+// tombstone closes the window between the collector deciding that a series has
+// expired and removing it, in which an emission would otherwise update a metric
+// that is about to be dropped, losing the value.
+type lastUpdate struct {
+	unixNano atomic.Int64
+}
+
+// touch records t as the time of the last update, and reports whether the entry
+// is still live. It fails when the collector has retired the entry, in which
+// case the value the caller applied landed on a metric nothing collects and has
+// to be applied again to a new one.
+//
+// It is the commit step of an emission, and runs after the metric itself is
+// updated: an emission that is retired mid-flight is then detected here rather
+// than silently lost.
+//
+// The stored time only moves forward. A slow emission must not write its own,
+// older timestamp over a newer one, which would make a just-updated series look
+// idle to the collector and expire it early.
+//
+// Every successful touch still changes the stored value, so a retire that was
+// decided on the value read before it always fails. Together with the ordering
+// above that leaves one way for an emission not to be exported: the series is
+// retired on a timestamp this very emission wrote, which means it stayed idle
+// for a full expiration afterwards, so it expired before anything scraped it.
+func (l *lastUpdate) touch(t time.Time) bool {
+	next := t.UnixNano()
+	for {
+		current := l.unixNano.Load()
+		if current == tombstone {
+			return false
+		}
+		if current >= next {
+			// a concurrent emission recorded a later time; move by the
+			// smallest step instead, rather than backwards
+			next = current + 1
+		}
+		if l.unixNano.CompareAndSwap(current, next) {
+			return true
+		}
+		next = t.UnixNano()
+	}
+}
+
+// idleSince returns the stored timestamp and whether the metric has been idle
+// for expiration at time t. A retired entry reports the tombstone and is
+// always idle.
+//
+// The comparison subtracts the timestamps instead of adding the expiration to
+// one of them: a valid expiration can be large enough for the sum to overflow,
+// which would make every series look idle.
+func (l *lastUpdate) idleSince(expiration time.Duration, t time.Time) (int64, bool) {
+	seen := l.unixNano.Load()
+	if seen == tombstone {
+		return seen, true
+	}
+	return seen, time.Duration(t.UnixNano()-seen) > expiration
+}
+
+// retire marks the entry as removed, unless it was updated since idleSince
+// reported it at seen. A failed retire means an emission got there first and
+// the entry must be kept.
+func (l *lastUpdate) retire(seen int64) bool {
+	return l.unixNano.CompareAndSwap(seen, tombstone)
 }
 
 // GaugeDefinition can be provided to Opts to declare a constant gauge that is not deleted on expiry.
@@ -107,7 +208,7 @@ type GaugeDefinition struct {
 
 type gauge struct {
 	prometheus.Gauge
-	updatedAt time.Time
+	lastUpdate
 	// canDelete is set if the metric is created during runtime so we know it's ephemeral and can delete it on expiry.
 	canDelete bool
 }
@@ -121,7 +222,7 @@ type SummaryDefinition struct {
 
 type summary struct {
 	prometheus.Summary
-	updatedAt time.Time
+	lastUpdate
 	canDelete bool
 }
 
@@ -134,7 +235,8 @@ type CounterDefinition struct {
 
 type counter struct {
 	prometheus.Counter
-	updatedAt time.Time
+	lastUpdate
+	canDelete bool
 }
 
 // NewSink creates a new Sink using DefaultPrometheusOpts.
@@ -145,20 +247,37 @@ func NewSink() (*Sink, error) {
 // NewSinkFrom creates a new Sink using the passed options and registers it
 // with opts.Registerer, or with prometheus.DefaultRegisterer when unset.
 //
-// It returns an error when a collector with the same name is already
-// registered with that registerer.
+// It returns an error, and no sink, when a collector with the same name is
+// already registered with that registerer. The cause is preserved, so
+// errors.As with prometheus.AlreadyRegisteredError still works.
 func NewSinkFrom(opts Opts) (*Sink, error) {
+	sink := newSink(opts)
+
+	reg := opts.Registerer
+	if reg == nil {
+		reg = prometheus.DefaultRegisterer
+	}
+
+	if err := reg.Register(sink); err != nil {
+		return nil, errors.WithMessage(err, "unable to register sink")
+	}
+	return sink, nil
+}
+
+// newSink builds the sink and its pre-declared series, without registering it.
+func newSink(opts Opts) *Sink {
 	name := opts.Name
 	if name == "" {
 		name = defaultSinkName
 	}
 	sink := &Sink{
-		gauges:     sync.Map{},
-		summaries:  sync.Map{},
-		counters:   sync.Map{},
-		expiration: opts.Expiration,
-		help:       opts.Help,
-		name:       name,
+		gauges:            sync.Map{},
+		summaries:         sync.Map{},
+		counters:          sync.Map{},
+		expiration:        opts.Expiration,
+		counterExpiration: opts.CounterExpiration,
+		help:              opts.Help,
+		name:              name,
 	}
 	if sink.help == nil {
 		sink.help = make(map[string]string)
@@ -168,12 +287,7 @@ func NewSinkFrom(opts Opts) (*Sink, error) {
 	initSummaries(&sink.summaries, opts.SummaryDefinitions, sink.help)
 	initCounters(&sink.counters, opts.CounterDefinitions, sink.help)
 
-	reg := opts.Registerer
-	if reg == nil {
-		reg = prometheus.DefaultRegisterer
-	}
-
-	return sink, reg.Register(sink)
+	return sink
 }
 
 // Describe sends a Collector.Describe value from the descriptor created around Sink.Name
@@ -197,53 +311,68 @@ func (p *Sink) Collect(c chan<- prometheus.Metric) {
 // collectAtTime allows internal testing of the expiry based logic here without
 // mocking clocks or making tests timing sensitive.
 func (p *Sink) collectAtTime(c chan<- prometheus.Metric, t time.Time) {
-	expire := p.expiration != 0
+	// a negative expiration is a misconfiguration; treat it like the zero
+	// value, which means "never expire", instead of dropping every series on
+	// the first scrape
+	expire := p.expiration > 0
+	expireCounters := p.counterExpiration > 0
 	deleted := 0
 	p.gauges.Range(func(k, v any) bool {
-		if v == nil {
-			return true
-		}
 		g := v.(*gauge)
-		lastUpdate := g.updatedAt
-		if expire && lastUpdate.Add(p.expiration).Before(t) {
-			if g.canDelete {
-				p.gauges.Delete(k)
-				deleted++
-				return true
-			}
+		if expire && g.canDelete && retire(&p.gauges, k, v, &g.lastUpdate, p.expiration, t) {
+			deleted++
+			return true
 		}
 		g.Collect(c)
 		return true
 	})
 	p.summaries.Range(func(k, v any) bool {
-		if v == nil {
-			return true
-		}
 		s := v.(*summary)
-		lastUpdate := s.updatedAt
-		if expire && lastUpdate.Add(p.expiration).Before(t) {
-			if s.canDelete {
-				p.summaries.Delete(k)
-				deleted++
-				return true
-			}
+		if expire && s.canDelete && retire(&p.summaries, k, v, &s.lastUpdate, p.expiration, t) {
+			deleted++
+			return true
 		}
 		s.Collect(c)
 		return true
 	})
-	p.counters.Range(func(_, v any) bool {
-		if v == nil {
+	p.counters.Range(func(k, v any) bool {
+		count := v.(*counter)
+		// Counters are kept unless Opts.CounterExpiration asks otherwise:
+		// removing one resets the series and breaks rate() over the gap.
+		if expireCounters && count.canDelete && retire(&p.counters, k, v, &count.lastUpdate, p.counterExpiration, t) {
+			deleted++
 			return true
 		}
-		count := v.(*counter)
-		// Counters are never deleted: removing one would reset the series and
-		// break rate() over the scrape gap.
 		count.Collect(c)
 		return true
 	})
 	if deleted > 0 {
 		logger.KV(xlog.DEBUG, "deleted_expired", deleted)
 	}
+}
+
+// retire removes an expired entry from m, and reports whether the entry is
+// gone and must not be collected.
+//
+// The removal is conditional twice over: the entry is tombstoned only if it has
+// not been updated since it was read as idle, and it is deleted from the map
+// only if it is still the entry that was tombstoned. An emission that raced
+// with either step sees the tombstone and registers a fresh series instead of
+// updating a metric nothing collects.
+//
+// An entry that is already tombstoned was retired by a concurrent scrape, or is
+// about to be removed by the emission that found it retired; it is skipped
+// without being counted as a retirement of this scrape.
+func retire(m *sync.Map, key, value any, updated *lastUpdate, expiration time.Duration, t time.Time) bool {
+	seen, idle := updated.idleSince(expiration, t)
+	if !idle {
+		return false
+	}
+	if seen != tombstone && !updated.retire(seen) {
+		return false
+	}
+	m.CompareAndDelete(key, value)
+	return true
 }
 
 // initGauges pre-declares the gauges and records their help text.
@@ -319,6 +448,43 @@ func flattenKey(parts string, labels []metrics.Tag) (string, string) {
 	return key, buf.String()
 }
 
+// validSeries reports whether the client library accepts the metric name and
+// the labels, applying the same rules as prometheus.NewDesc, and logs the
+// rejected series.
+//
+// A rejected name does not fail at construction: the metric gets an erroring
+// descriptor, and one such series fails the whole scrape with HTTP 500 until it
+// expires. Dropping the emission keeps the endpoint serving the rest.
+// It runs only when a series is created; an existing entry was validated then.
+func validSeries(key string, labels []metrics.Tag) bool {
+	reason := ""
+	switch {
+	case !model.UTF8Validation.IsValidMetricName(key):
+		reason = "invalid_metric_name"
+	default:
+		for _, label := range labels {
+			if !model.UTF8Validation.IsValidLabelName(label.Name) ||
+				strings.HasPrefix(label.Name, reservedLabelPrefix) {
+				reason = "invalid_label_name"
+				break
+			}
+			if !utf8.ValidString(label.Value) {
+				reason = "invalid_label_value"
+				break
+			}
+		}
+	}
+	if reason == "" {
+		return true
+	}
+	logger.KV(xlog.ERROR,
+		"reason", reason,
+		"metric", key,
+		"labels", labels,
+	)
+	return false
+}
+
 // prometheusLabels converts the tags into the const labels of a metric.
 func prometheusLabels(labels []metrics.Tag) prometheus.Labels {
 	l := make(prometheus.Labels, len(labels))
@@ -336,71 +502,104 @@ func (p *Sink) helpFor(key string) string {
 	return key
 }
 
+// The emit methods retry until the value is committed to a live series. Every
+// turn of the loop that does not return is caused by another goroutine having
+// completed its own step, so the loop cannot spin without the sink making
+// progress: either the collector retired the entry, which the emission then
+// removes itself before trying again, or a concurrent emission published the
+// series first, which the next turn finds and updates. A bounded loop would
+// instead have to drop the value when the bound is reached, silently.
+
 // SetGauge retains the last value it is set to.
 // The gauge is created on first use and expires after Opts.Expiration.
+// An emission the client library would reject is dropped and reported.
 func (p *Sink) SetGauge(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
-	pg, ok := p.gauges.Load(hash)
 
-	// The sync.Map underlying gauges stores pointers to our structs. If we need to make updates,
-	// rather than modifying the underlying value directly, which would be racy, we make a local
-	// copy by dereferencing the pointer we get back, making the appropriate changes, and then
-	// storing a pointer to our local copy. The underlying Prometheus types are threadsafe,
-	// so there's no issues there. It's possible for racy updates to occur to the updatedAt
-	// value, but since we're always setting it to time.Now(), it doesn't really matter.
-	if ok {
-		localGauge := *pg.(*gauge)
-		localGauge.Set(val)
-		localGauge.updatedAt = time.Now()
-		p.gauges.Store(hash, &localGauge)
+	for {
+		if v, ok := p.gauges.Load(hash); ok {
+			g := v.(*gauge)
+			g.Set(val)
+			if g.touch(time.Now()) {
+				return
+			}
+			// the collector retired the series while the value was applied, so
+			// it landed on a gauge nothing collects: drop the entry and set it
+			// on a new one
+			p.gauges.CompareAndDelete(hash, v)
+			continue
+		}
 
-		// The gauge does not exist, create the gauge and allow it to be deleted
-	} else {
-		g := prometheus.NewGauge(prometheus.GaugeOpts{
-			Name:        key,
-			Help:        p.helpFor(key),
-			ConstLabels: prometheusLabels(labels),
-		})
-		g.Set(val)
-		pg = &gauge{
-			Gauge:     g,
-			updatedAt: time.Now(),
+		if !validSeries(key, labels) {
+			return
+		}
+
+		// The gauge does not exist, create it and allow it to be deleted
+		pg := &gauge{
+			Gauge: prometheus.NewGauge(prometheus.GaugeOpts{
+				Name:        key,
+				Help:        p.helpFor(key),
+				ConstLabels: prometheusLabels(labels),
+			}),
 			canDelete: true,
 		}
-		p.gauges.Store(hash, pg)
+		pg.Set(val)
+		pg.touch(time.Now())
+
+		// publish only once the value is in, so the collector never sees the
+		// series without it; a concurrent emission may have created it first,
+		// in which case the value belongs on that one instead
+		if _, loaded := p.gauges.LoadOrStore(hash, pg); !loaded {
+			return
+		}
 	}
 }
 
 // AddSample records an observation in a summary,
 // exported as the configured quantiles plus _sum and _count.
 // The summary is created on first use and expires after Opts.Expiration.
+// An emission the client library would reject is dropped and reported.
 func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
-	ps, ok := p.summaries.Load(hash)
 
-	// Does the summary already exist for this sample type?
-	if ok {
-		localSummary := *ps.(*summary)
-		localSummary.Observe(val)
-		localSummary.updatedAt = time.Now()
-		p.summaries.Store(hash, &localSummary)
+	for {
+		if v, ok := p.summaries.Load(hash); ok {
+			s := v.(*summary)
+			s.Observe(val)
+			if s.touch(time.Now()) {
+				return
+			}
+			// the collector retired the series while the observation was
+			// applied, so it landed on a summary nothing collects: drop the
+			// entry and observe on a new one
+			p.summaries.CompareAndDelete(hash, v)
+			continue
+		}
 
-		// The summary does not exist, create the Summary and allow it to be deleted
-	} else {
-		s := prometheus.NewSummary(prometheus.SummaryOpts{
-			Name:        key,
-			Help:        p.helpFor(key),
-			MaxAge:      ObservationMaxAge,
-			ConstLabels: prometheusLabels(labels),
-			Objectives:  summaryObjectives,
-		})
-		s.Observe(val)
-		ps = &summary{
-			Summary:   s,
-			updatedAt: time.Now(),
+		if !validSeries(key, labels) {
+			return
+		}
+
+		// The summary does not exist, create it and allow it to be deleted
+		ps := &summary{
+			Summary: prometheus.NewSummary(prometheus.SummaryOpts{
+				Name:        key,
+				Help:        p.helpFor(key),
+				MaxAge:      ObservationMaxAge,
+				ConstLabels: prometheusLabels(labels),
+				Objectives:  summaryObjectives,
+			}),
 			canDelete: true,
 		}
-		p.summaries.Store(hash, ps)
+		ps.Observe(val)
+		ps.touch(time.Now())
+
+		// publish only once the observation is in; the summary created here is
+		// discarded when another emission won the race, and the next turn
+		// observes on the registered one
+		if _, loaded := p.summaries.LoadOrStore(hash, ps); !loaded {
+			return
+		}
 	}
 }
 
@@ -409,32 +608,48 @@ func (p *Sink) AddSample(parts string, val float64, labels []metrics.Tag) {
 // model, rather than a push model.
 
 // IncrCounter accumulates values.
-// The counter is created on first use and is never expired, so every tag
-// combination emitted is retained for the lifetime of the process.
+// The counter is created on first use and, unless Opts.CounterExpiration is
+// set, is retained for the lifetime of the process.
+// An emission the client library would reject is dropped and reported.
 func (p *Sink) IncrCounter(parts string, val float64, labels []metrics.Tag) {
 	key, hash := flattenKey(parts, labels)
-	pc, ok := p.counters.Load(hash)
 
-	// Does the counter exist?
-	if ok {
-		localCounter := *pc.(*counter)
-		localCounter.Add(val)
-		localCounter.updatedAt = time.Now()
-		p.counters.Store(hash, &localCounter)
+	for {
+		if v, ok := p.counters.Load(hash); ok {
+			c := v.(*counter)
+			c.Add(val)
+			if c.touch(time.Now()) {
+				return
+			}
+			// the collector retired the series while the increment was applied,
+			// so it landed on a counter nothing collects: drop the entry and
+			// add it to a new one
+			p.counters.CompareAndDelete(hash, v)
+			continue
+		}
+
+		if !validSeries(key, labels) {
+			return
+		}
 
 		// The counter does not exist yet, create it
-	} else {
-		c := prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        key,
-			Help:        p.helpFor(key),
-			ConstLabels: prometheusLabels(labels),
-		})
-		c.Add(val)
-		pc = &counter{
-			Counter:   c,
-			updatedAt: time.Now(),
+		pc := &counter{
+			Counter: prometheus.NewCounter(prometheus.CounterOpts{
+				Name:        key,
+				Help:        p.helpFor(key),
+				ConstLabels: prometheusLabels(labels),
+			}),
+			canDelete: true,
 		}
-		p.counters.Store(hash, pc)
+		pc.Add(val)
+		pc.touch(time.Now())
+
+		// publish only once the increment is in; the counter created here is
+		// discarded when another emission won the race, and the next turn adds
+		// to the registered one
+		if _, loaded := p.counters.LoadOrStore(hash, pc); !loaded {
+			return
+		}
 	}
 }
 
@@ -449,32 +664,48 @@ type PushSink struct {
 	address      string
 	pushInterval time.Duration
 	stopChan     chan struct{}
+	doneChan     chan struct{}
+	stopOnce     sync.Once
 }
 
 // NewPushSink creates a PushSink by taking an address, interval, and destination name,
 // and starts the background push loop.
 //
 // The wrapped Sink is not registered with any prometheus.Registerer and uses a
-// fixed 60s expiration, so the options of NewSinkFrom do not apply. Call
-// Shutdown to stop pushing. The error is always nil and exists for API
-// compatibility. pushInterval must be greater than zero.
+// 60s expiration. Use NewPushSinkFrom to configure it. Call Shutdown to stop
+// pushing. pushInterval must be greater than zero.
 func NewPushSink(address string, pushInterval time.Duration, name string) (*PushSink, error) {
-	promSink := &Sink{
-		gauges:     sync.Map{},
-		summaries:  sync.Map{},
-		counters:   sync.Map{},
-		expiration: 60 * time.Second,
-		name:       defaultSinkName,
+	return NewPushSinkFrom(address, pushInterval, name, Opts{
+		Expiration: defaultExpiration,
+		Name:       defaultSinkName,
+	})
+}
+
+// NewPushSinkFrom creates a PushSink with the given options and starts the
+// background push loop. name is the job name reported to the Pushgateway.
+//
+// The wrapped Sink is registered only when opts.Registerer is set, since a
+// pushed sink is usually not scraped as well. pushInterval must be greater
+// than zero.
+func NewPushSinkFrom(address string, pushInterval time.Duration, name string, opts Opts) (*PushSink, error) {
+	if pushInterval <= 0 {
+		return nil, errors.Errorf("invalid pushInterval: must be positive, got %s", pushInterval)
 	}
 
-	pusher := push.New(address, name).Collector(promSink)
+	promSink := newSink(opts)
+	if opts.Registerer != nil {
+		if err := opts.Registerer.Register(promSink); err != nil {
+			return nil, errors.WithMessage(err, "unable to register sink")
+		}
+	}
 
 	sink := &PushSink{
-		promSink,
-		pusher,
-		address,
-		pushInterval,
-		make(chan struct{}),
+		Sink:         promSink,
+		pusher:       push.New(address, name).Collector(promSink),
+		address:      address,
+		pushInterval: pushInterval,
+		stopChan:     make(chan struct{}),
+		doneChan:     make(chan struct{}),
 	}
 
 	sink.flushMetrics()
@@ -482,30 +713,44 @@ func NewPushSink(address string, pushInterval time.Duration, name string) (*Push
 }
 
 // flushMetrics starts the goroutine that pushes on the configured interval.
+// It closes doneChan on the way out, so Shutdown can wait for it.
 func (s *PushSink) flushMetrics() {
 	ticker := time.NewTicker(s.pushInterval)
 
 	go func() {
+		defer close(s.doneChan)
+		defer ticker.Stop()
 		for {
 			select {
 			case <-ticker.C:
-				err := s.pusher.Push()
-				if err != nil {
-					logger.KV(xlog.ERROR, "reason", "push", "address", s.address, "err", err.Error())
-				}
+				s.push()
 			case <-s.stopChan:
-				ticker.Stop()
 				return
 			}
 		}
 	}()
 }
 
+// push sends the sink to the Pushgateway and logs a failure. There is nothing
+// to return it to: the loop and Shutdown carry on regardless.
+func (s *PushSink) push() {
+	if err := s.pusher.Push(); err != nil {
+		logger.KV(xlog.ERROR, "reason", "push", "address", s.address, "err", err.Error())
+	}
+}
+
 // Shutdown tears down the PushSink, and blocks while flushing metrics to the backend.
-// It must be called at most once.
+// It is idempotent, and a concurrent call returns once the teardown is complete.
+//
+// It waits for the background loop to finish before the final push: a push
+// already in flight must not run concurrently with it, since the two would
+// share one push.Pusher.
 func (s *PushSink) Shutdown() {
-	close(s.stopChan)
-	// Closing the channel only stops the running goroutine that pushes metrics.
-	// To minimize the chance of data loss pusher.Push is called one last time.
-	_ = s.pusher.Push()
+	s.stopOnce.Do(func() {
+		close(s.stopChan)
+		<-s.doneChan
+		// Stopping the loop does not publish what was emitted since its last
+		// push, so the sink is pushed one last time.
+		s.push()
+	})
 }

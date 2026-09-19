@@ -45,9 +45,10 @@ type PointValue struct {
 
 // SampledValue provides sample value.
 //
-// The embedded AggregateSample is a pointer shared with the interval it was
-// read from, so Mean and Stddev are snapshots taken when the value was
-// formatted.
+// Mean and Stddev are derived once, when DisplayMetrics formats the value, from
+// the AggregateSample it points to. In a value obtained from InmemSink.Data or
+// DisplayMetrics that AggregateSample is an independent copy, so the three stay
+// consistent with each other and do not change afterwards.
 type SampledValue struct {
 	// Name is the metric name, without the flattened tags.
 	Name string
@@ -69,9 +70,9 @@ type SampledValue struct {
 // DisplayMetrics returns a summary of the metrics from the most recent
 // finished interval, with the values sorted by aggregation key.
 //
-// It returns an error when no interval has been recorded yet. It reads the
-// live intervals rather than a snapshot, so it races with concurrent
-// emissions; see FINDINGS.md #2.
+// It returns an error when no interval has been recorded yet. The values come
+// from the snapshot taken by Data, which is an independent copy, so no lock is
+// needed while it is formatted and the result cannot change under the caller.
 func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 	data := i.Data()
 
@@ -82,10 +83,10 @@ func (i *InmemSink) DisplayMetrics() (*Summary, error) {
 		return nil, errors.New("no metric intervals have been initialized yet")
 	case 1:
 		// Show the current interval if it's all we have
-		interval = i.intervals[0]
+		interval = data[0]
 	default:
 		// Show the most recent finished interval if we have one
-		interval = i.intervals[n-2]
+		interval = data[n-2]
 	}
 
 	summary := Summary{

@@ -82,11 +82,11 @@ func (i *InmemSignal) run() {
 func (i *InmemSignal) dumpStats() {
 	buf := bytes.NewBuffer(nil)
 
+	// Data returns independent copies, so the intervals need no locking here
 	data := i.inm.Data()
 	// Skip the last period which is still being aggregated
 	for j := 0; j < len(data)-1; j++ {
 		intv := data[j]
-		intv.RLock()
 		for _, val := range intv.Gauges {
 			name := i.flattenLabels(val.Name, val.Labels)
 			fmt.Fprintf(buf, "[%v][G] %q: %0.3f\n", intv.Interval, name, val.Value)
@@ -99,7 +99,6 @@ func (i *InmemSignal) dumpStats() {
 			name := i.flattenLabels(agg.Name, agg.Labels)
 			fmt.Fprintf(buf, "[%v][S] %q: %s\n", intv.Interval, name, agg.AggregateSample)
 		}
-		intv.RUnlock()
 	}
 
 	// Write out the bytes

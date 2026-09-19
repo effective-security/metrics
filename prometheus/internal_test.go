@@ -311,7 +311,7 @@ func TestDefinitions2(t *testing.T) {
 		{Name: "version", Value: "some info"},
 	})
 	sink.gauges.Range(func(key, value any) bool {
-		localGauge := *value.(*gauge)
+		localGauge := value.(*gauge)
 		if !strings.Contains(localGauge.Desc().String(), gaugeDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", gaugeDef.Help, localGauge.Desc().String())
 		}
@@ -322,7 +322,7 @@ func TestDefinitions2(t *testing.T) {
 		{Name: "version", Value: "some info"},
 	})
 	sink.summaries.Range(func(key, value any) bool {
-		metric := *value.(*summary)
+		metric := value.(*summary)
 		if !strings.Contains(metric.Desc().String(), summaryDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", summaryDef.Help, metric.Desc().String())
 		}
@@ -333,7 +333,7 @@ func TestDefinitions2(t *testing.T) {
 		{Name: "version", Value: "some info"},
 	})
 	sink.counters.Range(func(key, value any) bool {
-		metric := *value.(*counter)
+		metric := value.(*counter)
 		if !strings.Contains(metric.Desc().String(), counterDef.Help) {
 			t.Fatalf("expected gauge to include correct help=%s, but was %s", counterDef.Help, metric.Desc().String())
 		}

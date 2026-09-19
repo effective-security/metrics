@@ -59,12 +59,18 @@ Do not start by grepping the tree.
   the original cause.
 - Keep error strings accurate after refactors. Do not leave stale package
   or function names in runtime errors.
-- Panic reaches callers from `cloudwatch.dimensions` (more than 10 tags,
-  via `logger.Panicf`) and from `metrics.NewInmemSink` / `InmemSink.Data`
-  on an unusable interval or retention. None of these are an intended
-  contract: they are tracked in `FINDINGS.md` (#3, #4, #8). Do not add new
-  panic paths to a library call, and do not change an existing one without
-  updating both the codemap and the finding.
+- No library call in this module panics, and none should be added. A
+  misconfiguration is clamped and logged (`metrics.NewInmemSink`), rejected
+  with an error (`metrics.NewInmemSinkFromURL`,
+  `prometheus.NewPushSinkFrom`), or reported and dropped
+  (`cloudwatch.limitTags` truncates, `prometheus.validSeries` skips the
+  emission). Instrumentation must not be able to take down the code it
+  instruments, and one bad emission must not break the backend for the
+  rest.
+- Lock-free retry loops (the `prometheus.Sink` emit methods) are unbounded
+  on purpose: every retry is caused by another goroutine having completed
+  its step. Do not add an attempt limit that silently drops the value;
+  document the progress argument next to the loop instead.
 
 ### Tests
 
@@ -76,12 +82,17 @@ Do not start by grepping the tree.
   comments, and tests should actually execute in CI.
 - Prefer table tests for conversion and formatting helpers.
 - Put extra coverage in `*_extra_test.go` when extending an already large
-  test file. Use `package foo_test` for black-box tests.
+  test file. Use `package foo_test` for black-box tests; the existing
+  `*_extra_test.go` files follow that split, with
+  `prometheus/internal_extra_test.go` in-package for `collectAtTime`.
 - Prefer the seams the packages already provide over sleeping:
   `prometheus.Sink.collectAtTime` takes the evaluation time, and
   `cloudwatch.Sink.Publisher` can be replaced with a fake client.
   `InmemSink` has no clock seam, so its tests do sleep across an interval
   boundary; keep those durations small and the intervals shorter.
+- Cover shared state with a test that actually races: emit from several
+  goroutines while the code under test reconfigures or reads a snapshot, and
+  rely on the `RaceTest` CI step to fail on it.
 - This module has no gomock-generated interfaces; do not introduce mocks
   unless the package under test cannot be exercised directly.
 
@@ -94,9 +105,10 @@ Do not start by grepping the tree.
 - `make lint` : final check
 - `make all` : clean, tools, generate, coverage test
 
-CI requires **92%** coverage (`MIN_TESTCOV` in `.github/workflows/unittest.yml`).
-CI does not run `-race`; run `go test -race ./...` yourself before proposing
-a change to shared state.
+CI requires **92%** coverage (`MIN_TESTCOV` in `.github/workflows/unittest.yml`)
+and runs the suite a second time under the race detector (the `RaceTest` step,
+`make test RACE=true`), so a data race fails the build. Run `make test RACE=true`
+yourself before proposing a change to shared state.
 
 ### Documentation
 

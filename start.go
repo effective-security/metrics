@@ -1,8 +1,11 @@
 package metrics
 
 import (
-	"fmt"
 	"os"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -11,11 +14,21 @@ import (
 
 var logger = xlog.NewPackageLogger("github.com/effective-security/metrics", "metrics")
 
+// Tag names added by Prepare from the configuration.
+const (
+	tagHost    = "host"
+	tagService = "service"
+)
+
 // Config is used to configure metrics settings.
 //
 // The zero value emits nothing: FilterDefault must be set to true, or an
 // explicit AllowedPrefixes list must be provided, for metrics to reach the sink.
 // See Prepare for how the fields combine into the final metric key.
+//
+// A Config is read on every emission. Copy it into a Metrics with New and
+// change the filters through Metrics.UpdateFilter afterwards; writing to the
+// fields of a Config that is in use is not synchronized.
 type Config struct {
 	// ServiceName is prefixed to keys to separate services,
 	// or emitted as the "service" label when EnableServiceLabel is set.
@@ -33,8 +46,8 @@ type Config struct {
 	// instead of prefixing it to the key.
 	EnableServiceLabel bool
 	// EnableRuntimeMetrics enables profiling of runtime metrics
-	// (GC, Goroutines, Memory). New starts a background goroutine for it that
-	// runs for the lifetime of the process.
+	// (GC, Goroutines, Memory). New starts a background goroutine for it,
+	// which runs until Metrics.Close is called.
 	EnableRuntimeMetrics bool
 	// EnableTypePrefix prefixes the key with the metric type:
 	// TypeCounter, TypeGauge or TypeSample.
@@ -55,11 +68,12 @@ type Config struct {
 	NumberLabelPrefix string
 
 	// AllowedPrefixes is a list of metric key prefixes to allow.
+	// A key matching one of them is emitted regardless of FilterDefault.
 	AllowedPrefixes []string
 	// BlockedPrefixes is a list of metric key prefixes to block.
 	// A blocked prefix always wins over an allowed one.
 	BlockedPrefixes []string
-	// FilterDefault is the verdict for keys that no prefix rule decides:
+	// FilterDefault is the verdict for keys that no prefix rule matches:
 	// true allows them, false drops them.
 	FilterDefault bool
 }
@@ -67,14 +81,45 @@ type Config struct {
 // Metrics represents an instance of a metrics sink that can
 // be used to emit.
 //
-// A Metrics value is safe for concurrent emission. Reconfiguring it after
-// construction, with UpdateFilter or by writing to the embedded Config,
-// is not synchronized against concurrent emission.
+// A Metrics value is safe for concurrent emission, and for concurrent
+// UpdateFilter. It must not be copied.
 type Metrics struct {
 	Config
 
+	// filters holds the rules in effect, replaced as a whole by UpdateFilter
+	// so emissions never read a half-updated rule set.
+	filters atomic.Pointer[metricFilters]
+
+	stopCh   chan struct{}
+	stopOnce sync.Once
+
 	lastNumGC uint32
 	sink      Sink
+}
+
+// metricFilters is an immutable snapshot of the prefix rules.
+type metricFilters struct {
+	allowed       []string
+	blocked       []string
+	filterDefault bool
+}
+
+// allow reports whether the assembled key passes the rules.
+func (f *metricFilters) allow(key string) bool {
+	return allowMetric(key, f.allowed, f.blocked, f.filterDefault)
+}
+
+// allowMetric implements the filter precedence shared by Config and Metrics:
+// a blocked prefix wins over an allowed one, an allowed prefix admits the key,
+// and a key that matches no rule falls back to filterDefault.
+func allowMetric(key string, allowed, blocked []string, filterDefault bool) bool {
+	if len(blocked) > 0 && StringStartsWithOneOf(key, blocked) {
+		return false
+	}
+	if len(allowed) > 0 && StringStartsWithOneOf(key, allowed) {
+		return true
+	}
+	return filterDefault
 }
 
 // globalMetrics is the shared instance used by the package-level emit functions.
@@ -82,7 +127,18 @@ var globalMetrics atomic.Pointer[Metrics]
 
 func init() {
 	// Initialize to a blackhole sink to avoid errors
-	globalMetrics.Store(&Metrics{sink: &BlackholeSink{}})
+	globalMetrics.Store(newBlackholeMetrics())
+}
+
+// newBlackholeMetrics builds the instance used before NewGlobal is called.
+// Its zero Config drops every metric, so nothing reaches the sink either way.
+func newBlackholeMetrics() *Metrics {
+	met := &Metrics{
+		stopCh: make(chan struct{}),
+		sink:   &BlackholeSink{},
+	}
+	met.UpdateFilter(nil, nil)
+	return met
 }
 
 // DefaultConfig provides a sane default configuration:
@@ -107,20 +163,32 @@ func DefaultConfig(serviceName string) *Config {
 
 // New is used to create a new instance of Metrics.
 //
-// The configuration is copied, so later changes to conf do not affect the
-// returned instance. When conf.EnableRuntimeMetrics is set, New starts a
-// collector goroutine that cannot be stopped; create at most one such instance
-// per process. The error is always nil and exists for API compatibility.
+// The configuration is copied, including its tag and prefix slices, so later
+// changes to conf do not affect the returned instance; use Metrics.UpdateFilter
+// to change the filters. TimerGranularity and ProfileInterval fall back to
+// their defaults when they are not positive. When conf.EnableRuntimeMetrics is
+// set, New starts a collector goroutine that Metrics.Close stops. The error is
+// always nil and exists for API compatibility.
 func New(conf *Config, sink Sink) (*Metrics, error) {
-	met := &Metrics{}
+	met := &Metrics{
+		stopCh: make(chan struct{}),
+		sink:   sink,
+	}
 	met.Config = *conf
-	met.sink = sink
+	// the assignment above copies slice headers, which would leave the
+	// instance reading, and racing on, memory the caller still owns
+	met.GlobalTags = slices.Clone(conf.GlobalTags)
+	met.AllowedPrefixes = slices.Clone(conf.AllowedPrefixes)
+	met.BlockedPrefixes = slices.Clone(conf.BlockedPrefixes)
+	// UpdateFilter takes its own copy
 	met.UpdateFilter(conf.AllowedPrefixes, conf.BlockedPrefixes)
 
-	if met.TimerGranularity == 0 {
+	// a non-positive duration is a misconfiguration, not a request for a tight
+	// loop: ProfileInterval reaches time.NewTicker, which panics on one
+	if met.TimerGranularity <= 0 {
 		met.TimerGranularity = time.Millisecond
 	}
-	if met.ProfileInterval == 0 {
+	if met.ProfileInterval <= 0 {
 		met.ProfileInterval = time.Second
 	}
 
@@ -134,8 +202,8 @@ func New(conf *Config, sink Sink) (*Metrics, error) {
 // NewGlobal is the same as New, but it assigns the metrics object to be
 // used globally as well as returning it.
 //
-// The instance previously installed as global, and its runtime collector,
-// are not shut down.
+// The instance previously installed as global is not closed; close it first if
+// it was collecting runtime metrics.
 func NewGlobal(conf *Config, sink Sink) (*Metrics, error) {
 	metrics, err := New(conf, sink)
 	if err == nil {
@@ -170,7 +238,6 @@ func MeasureSince(key string, start time.Time, tags ...Tag) {
 }
 
 // UpdateFilter replaces the prefix filters of the global instance.
-// It is not safe to call while other goroutines emit metrics.
 func UpdateFilter(allow, block []string) {
 	globalMetrics.Load().UpdateFilter(allow, block)
 }
@@ -188,57 +255,85 @@ const maxNumberlen = 15
 //
 //	<GlobalPrefix>_<ServiceName>_<typ>_<HostName>_<key>
 //
-// and tags are extended with GlobalTags plus the optional "host" and "service"
-// labels. Callers must treat the tags they pass in as owned by Prepare: it
-// appends to the given slice and rewrites values in place when
-// NumberLabelPrefix is set.
+// and the returned tags are the given ones followed by GlobalTags plus the
+// optional "host" and "service" labels. The caller's slice is never modified:
+// when tags have to be added, or rewritten for NumberLabelPrefix, the result
+// is a new slice.
 func (m *Config) Prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
-	if len(m.GlobalTags) > 0 {
-		tags = append(tags, m.GlobalTags...)
-	}
-	if m.HostName != "" {
-		if m.EnableHostnameLabel {
-			tags = append(tags, Tag{"host", m.HostName})
-		} else if m.EnableHostname {
-			key = m.HostName + "_" + key
-		}
+	key, out := m.prepare(typ, key, tags)
+	return m.AllowMetric(key), key, out
+}
+
+// prepare assembles the key and the tags, without applying the filters.
+func (m *Config) prepare(typ string, key string, tags []Tag) (string, []Tag) {
+	hostLabel := m.HostName != "" && m.EnableHostnameLabel
+	if m.HostName != "" && !m.EnableHostnameLabel && m.EnableHostname {
+		key = m.HostName + "_" + key
 	}
 	if m.EnableTypePrefix {
 		key = typ + "_" + key
 	}
-	if m.ServiceName != "" {
-		if m.EnableServiceLabel {
-			tags = append(tags, Tag{"service", m.ServiceName})
-		} else {
-			key = m.ServiceName + "_" + key
-		}
+	serviceLabel := m.ServiceName != "" && m.EnableServiceLabel
+	if m.ServiceName != "" && !m.EnableServiceLabel {
+		key = m.ServiceName + "_" + key
 	}
-
 	if m.GlobalPrefix != "" {
 		key = m.GlobalPrefix + "_" + key
 	}
 
-	if m.NumberLabelPrefix != "" {
-		for idx, tag := range tags {
-			if isBigNumber(tag.Value) {
-				tags[idx].Value = m.NumberLabelPrefix + tag.Value
-			}
+	out := tags
+	extra := len(m.GlobalTags)
+	if hostLabel {
+		extra++
+	}
+	if serviceLabel {
+		extra++
+	}
+	if extra > 0 {
+		out = make([]Tag, 0, len(tags)+extra)
+		out = append(out, tags...)
+		out = append(out, m.GlobalTags...)
+		if hostLabel {
+			out = append(out, Tag{Name: tagHost, Value: m.HostName})
+		}
+		if serviceLabel {
+			out = append(out, Tag{Name: tagService, Value: m.ServiceName})
 		}
 	}
 
-	return m.AllowMetric(key), key, tags
+	if m.NumberLabelPrefix != "" {
+		// copy on write: out may still be the caller's slice
+		out = m.prefixNumbers(out, extra > 0)
+	}
+
+	return key, out
+}
+
+// prefixNumbers applies NumberLabelPrefix to the tag values that look like
+// 64-bit numbers. owned tells whether tags is already a slice this package
+// allocated; if it is not, the slice is cloned before the first rewrite.
+func (m *Config) prefixNumbers(tags []Tag, owned bool) []Tag {
+	for idx, tag := range tags {
+		if !isBigNumber(tag.Value) {
+			continue
+		}
+		if !owned {
+			tags = slices.Clone(tags)
+			owned = true
+		}
+		tags[idx].Value = m.NumberLabelPrefix + tag.Value
+	}
+	return tags
 }
 
 // isBigNumber reports whether s is an optionally signed decimal integer
-// of at least maxNumberlen digits.
+// of at least maxNumberlen digits. The sign does not count towards the digits.
 func isBigNumber(s string) bool {
-	if len(s) < maxNumberlen {
+	digits := strings.TrimPrefix(s, "-")
+	if len(digits) < maxNumberlen {
 		return false
 	}
-	for idx, ch := range s {
-		if idx == 0 && ch == '-' {
-			continue
-		}
+	for _, ch := range digits {
 		if ch < '0' || ch > '9' {
 			return false
 		}
@@ -249,22 +344,10 @@ func isBigNumber(s string) bool {
 // AllowMetric returns whether the metric should be allowed based on the
 // configured prefix filters.
 //
-// A key matching BlockedPrefixes is always dropped. Any other key currently
-// resolves to FilterDefault: AllowedPrefixes does not restrict emission.
-// See FINDINGS.md #1 before relying on an allow-list.
+// A key matching BlockedPrefixes is dropped, a key matching AllowedPrefixes is
+// emitted, and a key matching neither falls back to FilterDefault.
 func (m *Config) AllowMetric(key string) bool {
-	if len(m.BlockedPrefixes) > 0 {
-		if StringStartsWithOneOf(key, m.BlockedPrefixes) {
-			return false
-		}
-	}
-	if len(m.AllowedPrefixes) > 0 {
-		if !StringStartsWithOneOf(key, m.AllowedPrefixes) {
-			return true
-		}
-	}
-
-	return m.FilterDefault
+	return allowMetric(key, m.AllowedPrefixes, m.BlockedPrefixes, m.FilterDefault)
 }
 
 // Metric types, used as the type prefix when Config.EnableTypePrefix is set,
@@ -273,6 +356,10 @@ const (
 	TypeCounter = "counter"
 	TypeSample  = "sample"
 	TypeGauge   = "gauge"
+
+	// typeSummary is accepted as an alias of TypeSample in Describe.Type,
+	// because that is how the Prometheus sink exports samples.
+	typeSummary = "summary"
 )
 
 // Describe provides metric description.
@@ -282,7 +369,8 @@ const (
 // supplies exactly the expected tag values. Its emit methods always go to the
 // global instance.
 type Describe struct {
-	// Type of the metric: counter|gauge|summary
+	// Type of the metric: TypeCounter, TypeGauge or TypeSample.
+	// "summary" is accepted as an alias of TypeSample.
 	Type string
 	// Name is the metric name
 	Name string
@@ -290,6 +378,25 @@ type Describe struct {
 	Help string
 	// RequiredTags is a list of metric tags
 	RequiredTags []string
+}
+
+// emitType returns the canonical type prefix for the metric, so that the key
+// built by Config.Help matches the one the emit methods produce.
+// An unknown type is reported and used as-is.
+func (d *Describe) emitType() string {
+	switch d.Type {
+	case TypeCounter, TypeGauge, TypeSample:
+		return d.Type
+	case typeSummary:
+		return TypeSample
+	default:
+		logger.KV(xlog.ERROR,
+			"reason", "invalid_type",
+			"metric", d.Name,
+			"type", d.Type,
+		)
+		return d.Type
+	}
 }
 
 // Tags constructs tags. The size and order of the vals must match the ones in
@@ -308,7 +415,7 @@ func (d *Describe) Tags(vals ...string) []Tag {
 			"required", required,
 			"provided", provided,
 		)
-		return []Tag{{Name: "invalid_tags", Value: fmt.Sprintf("%d", provided)}}
+		return []Tag{{Name: "invalid_tags", Value: strconv.Itoa(provided)}}
 	}
 	if required == 0 {
 		return nil
@@ -353,16 +460,23 @@ func (d *Describe) MeasureSince(start time.Time, tags ...string) {
 // metric name that this configuration produces.
 //
 // The result is meant for prometheus.Opts.Help, so the exported HELP line
-// matches the metric. Metrics blocked by the filters are omitted. The key is
-// derived from Describe.Type, so a Describe must use the TypeCounter,
-// TypeGauge and TypeSample constants for the key to match the emitted one when
-// Config.EnableTypePrefix is set.
+// matches the metric. Metrics blocked by the configured filters are omitted;
+// Metrics.Help applies the filters in effect instead.
 func (m *Config) Help(providers ...[]*Describe) map[string]string {
+	return describeHelp(m.Prepare, providers)
+}
+
+// prepareFunc is the signature shared by Config.Prepare and Metrics.Prepare.
+type prepareFunc func(typ string, key string, tags ...Tag) (bool, string, []Tag)
+
+// describeHelp collects the help text of the allowed metrics, keyed by the name
+// prepare assembles for them.
+func describeHelp(prepare prepareFunc, providers [][]*Describe) map[string]string {
 	h := make(map[string]string)
 
 	for _, descs := range providers {
 		for _, d := range descs {
-			allowed, key, _ := m.Prepare(d.Type, d.Name)
+			allowed, key, _ := prepare(d.emitType(), d.Name)
 			if allowed {
 				h[key] = d.Help
 			}

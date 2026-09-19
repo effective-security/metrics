@@ -22,7 +22,10 @@ type Tag struct {
 // to an external system.
 //
 // Implementations receive the final key, after Config.Prepare has applied the
-// prefixes and filters, and must be safe for concurrent use.
+// prefixes and filters, and must be safe for concurrent use. The tags slice
+// may be retained by the sink — InmemSink keeps it as the labels of the
+// aggregated value — so callers must not modify a tags slice after passing it
+// to an emit method.
 type Sink interface {
 	// SetGauge should retain the last value it is set to
 	SetGauge(key string, val float64, tags []Tag)

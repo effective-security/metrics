@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 )
@@ -53,19 +54,71 @@ func (m *Metrics) MeasureSince(key string, start time.Time, tags ...Tag) {
 	m.sink.AddSample(keys, msec, labels)
 }
 
-// UpdateFilter overwrites the existing filter with the given rules.
-// It is not safe to call while other goroutines emit metrics.
-func (m *Metrics) UpdateFilter(allow, block []string) {
-	m.AllowedPrefixes = allow
-	m.BlockedPrefixes = block
+// Prepare returns the final metric name and tags to emit, and whether the
+// metric passes the filters currently in effect.
+//
+// It assembles the key exactly like Config.Prepare, but takes the filter
+// verdict from the rules installed by UpdateFilter rather than from the
+// embedded Config, which keeps the rules it was constructed with.
+func (m *Metrics) Prepare(typ string, key string, tags ...Tag) (bool, string, []Tag) {
+	key, out := m.prepare(typ, key, tags)
+	return m.AllowMetric(key), key, out
 }
 
-// collectStats periodically collects runtime stats to publish.
-// It runs until the process exits; there is no way to stop it.
+// Help returns the help text of the described metrics, keyed by the final
+// metric name, omitting the metrics blocked by the filters currently in effect.
+// It differs from Config.Help only after UpdateFilter has been called.
+func (m *Metrics) Help(providers ...[]*Describe) map[string]string {
+	return describeHelp(m.Prepare, providers)
+}
+
+// AllowMetric reports whether the key passes the filters currently in effect.
+func (m *Metrics) AllowMetric(key string) bool {
+	if f := m.filters.Load(); f != nil {
+		return f.allow(key)
+	}
+	return m.Config.AllowMetric(key)
+}
+
+// UpdateFilter overwrites the existing filter with the given rules.
+// It is safe to call while other goroutines emit metrics: the rules are
+// replaced as a whole, so an emission sees either the old or the new set.
+//
+// The rules are copied. They do not update the embedded Config, which keeps
+// the values Metrics was constructed with; Metrics.AllowMetric and
+// Metrics.Prepare report the rules in effect.
+func (m *Metrics) UpdateFilter(allow, block []string) {
+	m.filters.Store(&metricFilters{
+		allowed:       slices.Clone(allow),
+		blocked:       slices.Clone(block),
+		filterDefault: m.FilterDefault,
+	})
+}
+
+// Close stops the runtime metrics collector started by New.
+// It is idempotent and safe for concurrent use. Emission keeps working after
+// Close; only the background collector is stopped.
+func (m *Metrics) Close() {
+	if m.stopCh == nil {
+		return
+	}
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+	})
+}
+
+// collectStats periodically collects runtime stats to publish, until Close.
 func (m *Metrics) collectStats() {
+	ticker := time.NewTicker(m.ProfileInterval)
+	defer ticker.Stop()
+
 	for {
-		time.Sleep(m.ProfileInterval)
-		m.emitRuntimeStats()
+		select {
+		case <-m.stopCh:
+			return
+		case <-ticker.C:
+			m.emitRuntimeStats()
+		}
 	}
 }
 
@@ -74,7 +127,7 @@ const maxGCPauses = 256
 
 // emitRuntimeStats emits various runtime statistics.
 // runtime.ReadMemStats stops the world, so ProfileInterval should stay
-// well above the collection cost.
+// well above the collection cost; see FINDINGS.md #14.
 func (m *Metrics) emitRuntimeStats() {
 	// Export number of Goroutines
 	numRoutines := runtime.NumGoroutine()
