@@ -10,9 +10,9 @@ require (
 	github.com/cockroachdb/errors v1.14.0
 	github.com/effective-security/x v0.18.106
 	github.com/effective-security/xlog v0.12.67
-	github.com/prometheus/client_golang v1.24.1
+	github.com/prometheus/client_golang v1.25.0
 	github.com/prometheus/client_model v0.6.3
-	github.com/prometheus/common v0.71.0
+	github.com/prometheus/common v0.72.0
 	github.com/stretchr/testify v1.12.1
 	google.golang.org/protobuf v1.36.12
 )
